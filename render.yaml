@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: api-vuelos
+    runtime: docker
+    repo: https://github.com/Luis-e-rf/API_Vuelos
+    plan: free
+    autoDeploy: true
+    healthCheckPath: /
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
