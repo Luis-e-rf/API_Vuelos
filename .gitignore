@@ -1,0 +1,16 @@
+# .env # archivos locales
+.env
+*.env
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Otros
+.DS_Store
+.idea/
+.vscode/
