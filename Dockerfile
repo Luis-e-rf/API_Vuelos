@@ -16,7 +16,7 @@ WORKDIR /app
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PATH="/app/.venv/bin:$PATH"
+    PYTHONPATH="/app/.venv/lib/python3.14/site-packages"
 
 COPY --from=builder /app/.venv /app/.venv
 COPY . .
@@ -25,4 +25,4 @@ EXPOSE 8080
 
 USER nonroot
 
-CMD ["/app/.venv/bin/python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
