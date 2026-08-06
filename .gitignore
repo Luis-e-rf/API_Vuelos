@@ -3,6 +3,10 @@
 *.env
 !.env.example
 
+# uv
+.venv/
+uv/.venv/
+
 # Python
 __pycache__/
 *.py[cod]

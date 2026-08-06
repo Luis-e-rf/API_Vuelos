@@ -1,7 +1,3 @@
-.git
-.env
 .venv
+requirements.txt
 __pycache__
-*.pyc
-.gitignore
-README.md

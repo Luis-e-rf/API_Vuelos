@@ -1,0 +1,18 @@
+[project]
+name = "api-vuelos"
+version = "0.1.0"
+description = "Bot de Telegram para búsqueda de vuelos"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115.6",
+    "uvicorn[standard]>=0.34.0",
+    "httpx>=0.28.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[tool.uv]
+package = false
