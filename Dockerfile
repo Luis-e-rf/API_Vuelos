@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM cgr.dev/chainguard/python:latest
 
 WORKDIR /app
 
@@ -15,5 +15,7 @@ RUN uv sync --no-dev --frozen --no-install-project
 COPY . .
 
 EXPOSE 8080
+
+USER nonroot
 
 CMD ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
