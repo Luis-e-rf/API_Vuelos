@@ -1,25 +1,22 @@
-app = "api-vuelos"
-primary_region = "iad"
-kill_signal = "SIGINT"
-kill_timeout = 5
+# fly.toml app configuration file generated for api-vuelos on 2026-08-06T18:15:10-05:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
 
-[env]
-  PORT = "8080"
+app = 'api-vuelos'
+primary_region = 'iad'
 
+[build]
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = "suspend"
+  auto_stop_machines = 'stop'
   auto_start_machines = true
-  min_machines_running = 1
+  min_machines_running = 0
+  processes = ['app']
 
-  [[http_service.checks]]
-    interval = "30s"
-    timeout = "5s"
-    grace_period = "15s"
-    method = "GET"
-    path = "/"
-  [http_service.concurrency]
-    type = "connections"
-    hard_limit = 100
-    soft_limit = 80
+[[vm]]
+  memory = '1gb'
+  cpu_kind = 'shared'
+  cpus = 1
+  memory_mb = 1024
