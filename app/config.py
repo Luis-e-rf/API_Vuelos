@@ -29,3 +29,8 @@ WA_GRAPH_URL = os.environ.get("WHATSAPP_GRAPH_URL", "https://graph.facebook.com/
 # Upstash Redis (perfil por chat_id)
 UPSTASH_REDIS_REST_URL = os.environ.get("UPSTASH_REDIS_REST_URL", "")
 UPSTASH_REDIS_REST_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
+
+# LLM: se recorren en orden, cada une tiene su free tier. Vacío = se usa fallback local.
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")

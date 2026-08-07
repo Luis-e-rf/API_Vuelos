@@ -33,6 +33,7 @@ class Perfil:
     pasaporte: Optional[bool] = None
     nombre: Optional[str] = None
     ultimo_destino_sugerido: Optional[str] = None
+    esperando: Optional[str] = None
     timestamps: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
