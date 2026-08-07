@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Request
 
+from app import config
 from app.adapters.telegram import TelegramAdapter
 from app.adapters.whatsapp import WhatsAppAdapter
 from app.orchestrator import Orquestador
@@ -17,6 +18,18 @@ _whatsapp = WhatsAppAdapter()
 @app.get("/")
 async def root():
     return {"status": "ok", "canales": ["telegram", "whatsapp"]}
+
+
+@app.get("/diagnostico")
+async def diagnostico():
+    """Dice qué credenciales llegaron a la app (sin exponer sus valores)."""
+    return {
+        "telegram": bool(config.TELEGRAM_BOT_TOKEN),
+        "gemini": bool(config.GEMINI_API_KEY),
+        "groq": bool(config.GROQ_API_KEY),
+        "deepseek": bool(config.DEEPSEEK_API_KEY),
+        "upstash": bool(config.UPSTASH_REDIS_REST_URL),
+    }
 
 
 @app.post("/webhook")

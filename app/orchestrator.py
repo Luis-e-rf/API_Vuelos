@@ -55,6 +55,12 @@ class Orquestador:
             p.presupuesto = monto
             cambio = True
 
+        # "300 mil" -> 300.000 (presupuestos en pesos)
+        mil = re.search(r"(\d[\d.,]*)\s*mil", m.texto.lower())
+        if mil and p.presupuesto == (monto or None):
+            p.presupuesto = int(mil.group(1).replace(".", "").replace(",", "")) * 1000
+            cambio = True
+
         if any(c in t for c in ("desde bogota", "salgo de bogota", "desde bogot")):
             p.origen = "Bogota"
             cambio = True
@@ -88,7 +94,7 @@ class Orquestador:
             )
 
         # 2) Flujo: cambiando presupuesto
-        if t in ("cambiar presupuesto", "cambiar"):
+        if "cambiar" in t:
             p.esperando = "presupuesto"
             await self.store.guardar(p, m.canal)
             return MensajeSalida("¡Claro! ¿Con cuánto presupuesto cuentas ahora? (ej: 250 dólares)")
@@ -102,8 +108,8 @@ class Orquestador:
                 opciones=["Busca para este presupuesto"],
             )
 
-        # 3) Acciones explícitas de los botones
-        if "busca para este presupuesto" in t or "buscar" in t or "busca para" in t:
+        # 3) Acciones de búsqueda (el usuario escribe libre o toca el botón)
+        if any(marca in t for marca in ("busca", "busco", "buscar", "presupuesto")):
             return await self._respuesta_buscar(p, m)
 
         # 4) Conversación libre: usa LLM si hay proveedor, si no, fallback local
