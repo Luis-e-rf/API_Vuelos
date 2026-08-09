@@ -92,31 +92,39 @@ class FlightClient:
         moneda: Optional[str] = None,
         fecha: Optional[str] = None,
         numero: int = 3,
+        destino: Optional[str] = None,
     ) -> list[OpcionVuelo]:
         if self.real:
-            reales = await self._buscar_google(origen, fecha or fecha_default(), numero)
+            reales = await self._buscar_google(
+                origen, fecha or fecha_default(), numero, destino=destino
+            )
             if reales:
                 return reales
             log.warning("Google Flights sin respuesta -> crea motor simulado")
-        return self._simular(origen, presupuesto_cop, fecha, numero)
+        return self._simular(origen, presupuesto_cop, fecha, numero, destino)
 
     # --- Google Flights (vivo) ----------------------------------------------
 
     async def _buscar_google(
-        self, origen: str, fecha: str, numero: int
+        self, origen: str, fecha: str, numero: int, destino: Optional[str] = None
     ) -> list[OpcionVuelo]:
-        """Pide precios reales a Google Flights por origen->varios destinos."""
+        """Pide precios reales a Google Flights por origen->varios destinos
+        (o solo el destino pedido)."""
         origen_iata = _AEROPUERTOS.get(origen)
         if not origen_iata:
             log.warning("Google: origen %r sin IATA", origen)
             return []
 
-        destinos = [
-            c for c in _AEROPUERTOS
-            if c and c != origen and _AEROPUERTOS[c] != origen_iata
-        ][:6]
+        if destino:
+            candidatos = [destino] if destino in _AEROPUERTOS else []
+        else:
+            candidatos = [
+                c for c in _AEROPUERTOS
+                if c and c != origen and _AEROPUERTOS[c] != origen_iata
+            ][:6]
         salida: list[OpcionVuelo] = []
 
+        destinos = candidatos
         async def _uno(dest: str) -> None:
             try:
                 resultado = await asyncio.to_thread(
@@ -163,15 +171,17 @@ class FlightClient:
 
     # --- Simulador de emergencia -------------------------------------------
 
-    def _simular(
-        self, origen: str, presupuesto_cop: int, fecha: Optional[str], numero: int
+def _simular(
+        self, origen: str, presupuesto_cop: int, fecha: Optional[str], numero: int,
+        destino: Optional[str] = None,
     ) -> list[OpcionVuelo]:
         """Opciones realistas dentro del presupuesto (solo offline/degradado)."""
         origen = origen or "Bogota"
         fecha = fecha or fecha_default()
         rnd = random.Random(f"{origen}|{fecha}")
+        pool = [destino] if destino else _PRECIOS_COP.keys()
         destinos = sorted(
-            (d for d in _PRECIOS_COP if d != origen and _PRECIOS_COP[d] <= presupuesto_cop),
+            (d for d in pool if d != origen and _PRECIOS_COP[d] <= presupuesto_cop),
             key=lambda d: _PRECIOS_COP[d],
         )[:numero]
         opciones: list[OpcionVuelo] = []

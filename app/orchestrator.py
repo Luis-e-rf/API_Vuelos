@@ -115,6 +115,11 @@ class Orquestador:
         if any(marca in t for marca in ("busca", "busco", "buscar", "presupuesto")):
             return await self._respuesta_buscar(p, m)
 
+        # 3b) El usuario eligió un destino escribiendo solo el nombre de la ciudad
+        ciudad = _menciona_ciudad(m.texto)
+        if ciudad and p.presupuesto is not None and p.origen:
+            return await self._respuesta_destino(p, m, ciudad)
+
         # 4) Conversación libre: usa LLM si hay proveedor, si no, fallback local
         return await self._respuesta_conversacion(m, p)
 
@@ -155,6 +160,24 @@ class Orquestador:
             f"Con {_moneda(p.presupuesto)} desde {p.origen or 'tu ciudad'} no encontré opciones "
             "ahora mismo. Prueba de nuevo más tarde o cambia el presupuesto.",
             opciones=["Cambiar presupuesto"],
+        )
+
+    async def _respuesta_destino(self, p: Perfil, m: MensajeEntrada, ciudad: str) -> MensajeSalida:
+        """El usuario eligió un destino: buscamos vuelos previa a esa ciudad concreta."""
+        origen = p.origen or "Bogota"
+        cop = _a_cop(p.presupuesto, p.moneda)
+        p.destino = ciudad
+        await self.store.guardar(p, m.canal)
+        numero = 3
+        opciones = await self.flight.buscar(origen, cop, p.moneda, destino=ciudad, numero=numero)
+        if opciones:
+            texto = formatear_opciones(opciones, cop)
+            texto = f"¡Excelente elección! {texto}"
+            return MensajeSalida(texto, opciones=["Cambiar presupuesto", "Otras fechas"])
+        return MensajeSalida(
+            f"Para ir a *{ciudad}* con {_moneda(p.presupuesto)} no encontré opciones baratas ahora. "
+            "¿Probamos otra ciudad o ajustamos el presupuesto?",
+            opciones=["Cambiar presupuesto", "Busca para este presupuesto"],
         )
 
     async def _respuesta_conversacion(self, m: MensajeEntrada, p: Perfil) -> MensajeSalida:
@@ -201,15 +224,29 @@ _CiUDADES_CO = {
     "cali": "Cali",
     "barranquilla": "Barranquilla",
     "cartagena": "Cartagena",
+    "santa marta": "Santa Marta",
+    "leticia": "Leticia",
+    "villa de ley": "Villa de Leyva",
 }
 
+_ORIGEN_MARCADORES = ("desde", "parto", "salgo", "saliendo", "salgo de", "me voy de", "salida de")
 
-def _inferir_origen(texto: str) -> str:
-    """Detecta la ciudad de salida mencionada libremente en el mensaje."""
+
+def _menciona_ciudad(texto: str) -> Optional[str]:
+    """Devuelve la primera ciudad mencionada en el mensaje (si hay)."""
     t = texto.lower()
     for token, ciudad in _CiUDADES_CO.items():
         if token in t:
             return ciudad
+    return None
+
+
+def _inferir_origen(texto: str) -> str:
+    """Detecta la ciudad de salida SOLO si el texto incluye marcador de salida."""
+    t = texto.lower()
+    ciudad = _menciona_ciudad(texto)
+    if ciudad and any(marc in t for marc in _ORIGEN_MARCADORES):
+        return ciudad
     return "Colombia"
 
 
