@@ -16,6 +16,7 @@ _TITULOS: dict[str, str] = {
     "Barranquilla": "Barranquilla",
     "Cartagena": "Cartagena (Colombia)",
     "Santa Marta": "Santa Marta",
+    "San Andres": "San Andrés y Providencia",
     "Villa de Leyva": "Villa de Leyva",
     "Leticia": "Leticia",
     "Miami": "Miami",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import difflib
+import re
 from typing import Optional
 
 # Fuente única de destinos soportados y sus aeropuertos (IATA).
@@ -13,6 +14,7 @@ DESTINOS: dict[str, str] = {
     "Barranquilla": "BAQ",
     "Cartagena": "CTG",
     "Santa Marta": "SMR",
+    "San Andres": "ADZ",
     "Villa de Leyva": "BOG",
     "Leticia": "LET",
     "Miami": "MIA",
@@ -45,6 +47,12 @@ _ALIASES: dict[str, str] = {
     "santa marta": "Santa Marta",
     "santamarta": "Santa Marta",
     "smr": "Santa Marta",
+    "san andres": "San Andres",
+    "san andrés": "San Andres",
+    "sanandres": "San Andres",
+    "san mindres": "San Andres",
+    "adi": "San Andres",
+    "adz": "San Andres",
     "villa de leyva": "Villa de Leyva",
     "villa de leiva": "Villa de Leyva",
     "leticia": "Leticia",
@@ -92,3 +100,26 @@ def normalizar_destino(texto: str) -> Optional[str]:
     if entero:
         return entero[0]
     return None
+
+
+_MARCADORES_ORIGEN = (
+    " desde ",
+    "salgo de ",
+    "me voy de ",
+    "parto de ",
+    "saliendo de ",
+    "salida desde ",
+)
+
+
+def quitar_origen(texto: str) -> str:
+    """Quita del texto la ciudad que sigue a un marcador de origen
+    ("desde bogota" -> "") para que el destino se detecte sin confusión."""
+    t = texto.lower()
+    for alias, _c in _ALIASES.items():
+        for marker in _MARCADORES_ORIGEN:
+            pat = marker + alias
+            if pat in t:
+                t = t.replace(pat, " ", 1)
+                break
+    return t.strip()

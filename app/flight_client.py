@@ -31,6 +31,7 @@ _PRECIOS_COP = {
     "Barranquilla": 520_000,
     "Cartagena": 560_000,
     "Santa Marta": 600_000,
+    "San Andres": 640_000,
     "Villa de Leyva": 250_000,
     "Leticia": 950_000,
     "Miami": 1_600_000,
@@ -196,7 +197,9 @@ class FlightClient:
         rnd = random.Random(f"{origen}|{fecha}")
         pool = [destino] if destino else _PRECIOS_COP.keys()
         destinos = sorted(
-            (d for d in pool if d != origen and _PRECIOS_COP[d] <= presupuesto_cop),
+            (d for d in pool if d != origen and (
+                destino or _PRECIOS_COP[d] <= presupuesto_cop
+            )),
             key=lambda d: _PRECIOS_COP[d],
         )[:numero]
         opciones: list[OpcionVuelo] = []

@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass
 from typing import Optional
 
 from app import llm_router
-from app.destinos import normalizar_destino
+from app.destinos import normalizar_destino, quitar_origen
 
 log = logging.getLogger(__name__)
 
@@ -30,14 +30,15 @@ ACCIONES = (
 @dataclass
 class Intencion:
     accion: str = "conversacion"
-    numero: Optional[int] = None       # si eligió una opción por posición
-    destino: Optional[str] = None      # ciudad normalizada (canónica)
-    presupuesto: Optional[int] = None  # si mencionó un monto
-    pasajeros: Optional[int] = None
-    rango_meses: Optional[int] = None  # para "en los próximos N meses"
-    barato: bool = False               # "la más barata/económica"
-    rapido: bool = False               # "la más rápida"
-    opciones_recientes: int = 0        # cuántas opciones existen en el perfil
+    numero: Optional[int] = None              # si eligió una opción por posición
+    destino: Optional[str] = None           # ciudad normalizada (canónica)
+    presupuesto: Optional[int] = None       # si mencionó un monto
+    pasajeros: Optional[int] = None         # cuántos viajan
+    rango_meses: Optional[int] = None       # "en los próximos N meses"
+    fecha: Optional[str] = None             # fecha ISO detectada ("principios de enero 2027")
+    barato: bool = False                    # "más barata/económica"
+    rapido: bool = False                    # "más rápida"
+    opciones_recientes: int = 0             # cuántas opciones existen en el perfil
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -62,11 +63,13 @@ Posibles "accion":
 - "saludo" / "ayuda" / "conversacion"
 
 Formato JSON a devolver (usa valores null si no aplican):
-{"accion": "...", "numero": 3, "destino": "Barranquilla", "presupuesto": 600000, "pasajeros": 2, "rango_meses": 3, "barato": true, "rapido": false}
+{"accion": "...", "numero": 3, "destino": "Barranquilla", "presupuesto": 600000, "pasajeros": 2, "rango_meses": 3, "fecha": "2027-01-05", "barato": true, "rapido": false}
 
 Reglas:
 - numero: índice 1-based de la opción a la que se refiere, solo si accion=elegir_opcion.
 - destino: normaliza la ciudad aunque esté mal escrita ("barajilla" -> "Barranquilla").
+- pasajeros: cuántas personas viajan aunque esté en medio de otra frase ("para 4 personas" -> 4).
+- fecha: si el usuario menciona un mes/periodo ("a principios de enero de 2027") usa ISO: principios -> día 05, mediados -> 15, fines -> 25; "enero 2027" -> 2027-01-15.
 - barato: true si pide "la más barata/económica/regalada".
 - rapido: true si pide "la más rápida/corta/directa".
 
@@ -74,8 +77,12 @@ Mensaje del usuario: "{mensaje}"
 Opciones mostradas: {recientes}
 """
 
-_NUMERO_RE = re.compile(r"(\d+)")
-
+_ORDINALES = {
+    "primera": 1, "primero": 1, "1ra": 1, "1ª": 1,
+    "segunda": 2, "segundo": 2, "2da": 2, "2ª": 2,
+    "tercera": 3, "tercero": 3, "3ra": 3, "3ª": 3,
+    "cuarta": 4, "4ta": 4, "quinta": 5, "5ta": 5,
+}
 
 class Interpretador:
     """Traduce el texto libre a un Intencion estructurado.
@@ -121,6 +128,7 @@ class Interpretador:
             presupuesto=_coerce_int(raw.get("presupuesto")),
             pasajeros=_coerce_int(raw.get("pasajeros")),
             rango_meses=_coerce_int(raw.get("rango_meses")),
+            fecha=_coerce_fecha(raw.get("fecha")),
             barato=bool(raw.get("barato")),
             rapido=bool(raw.get("rapido")),
         )
@@ -131,6 +139,10 @@ class Interpretador:
     def _heuristica(
         self, texto: str, recientes: list[dict]
     ) -> Intencion:
+        """Recoge TODO lo que menciona el usuario (destino, fecha, pasajeros,
+        rango...) en una sola pasada y luego decide la acción. Así una frase
+        como "buscar vuelo a san andres para 4 personas en enero" no pierde
+        ninguna parte por el camino."""
         t = texto.lower().strip()
 
         if t in ("/start", "hola", "buenas", "hi", "buenas tardes", "buenos días"):
@@ -138,49 +150,49 @@ class Interpretador:
         if t in ("/help", "ayuda", "help", "que haces", "¿que haces?"):
             return Intencion(accion="ayuda")
 
-        if any(w in t for w in ("guardar", "guarda", "guardados")):
-            if "cambiar" in t and "guardados" in t:
-                return Intencion(accion="ver_guardados")
-            if "ver" in t and "guardados" in t:
-                return Intencion(accion="ver_guardados")
+        # acciones aisladas de memoria
+        if "guardados" in t and "ver" in t:
+            return Intencion(accion="ver_guardados")
+        if any(w in t for w in ("guardar", "guarda")):
             return Intencion(accion="guardar_viaje")
-
         if "cambiar" in t:
             return Intencion(accion="cambiar_presupuesto")
 
-        # "somos 2", "para 3 personas", "viajan 4"
-        m = re.search(
-            r"(?:somos|hay|viajan|somos solo|solo)\s+(\d+)(?:\s*(?:personas|viajeros|adultos|pasajeros))?\b",
-            t,
-        )
-        if not m:
-            m = re.search(
-                r"(?:para|viajan)\s+(\d+)\s*(?:personas|viajeros|adultos|pasajeros)\b", t
-            )
-        if m:
-            return Intencion(accion="pasajeros", pasajeros=int(m.group(1)))
-
-        # "la 3", "la opción 2", "la segunda"
-        num = _extraer_numero_texto(t)
-        if num and recientes and num <= len(recientes) and any(
-            w in t for w in ("la ", "opcion", "opción", "el ", "segunda", "tercera", "primera")
-            or t.strip().isdigit()
-        ):
-            return Intencion(accion="elegir_opcion", numero=num)
-
-        # rango temporal: "en/los próximos N meses/semanas", "lo más barato en 3 meses"
+        # ---- recoger TODOS los campos que aparezcan ----
+        pasajeros = _extraer_pasajeros(t)
+        fecha = _extraer_fecha(t)
         rango = _extraer_rango(t)
-        if rango:
-            barato = any(w in t for w in ("barat", "econ", "regala", "poco"))
-            return Intencion(accion="rango", rango_meses=rango, barato=barato)
+        num_opcion = _extraer_opcion(t, len(recientes))
+        barato = any(w in t for w in ("barat", "econ", "regala", "poco"))
+        rapido = any(w in t for w in ("rapid", "direct", "corto"))
+        sin_origen = quitar_origen(texto)
+        destino = normalizar_destino(sin_origen)
+        huella = _huele_busqueda(t) or destino or fecha or rango
 
-        # "busca/busco/buscar" explícitos -> acción buscar (aunque mencione ciudad)
-        if _huele_busqueda(t):
-            return Intencion(accion="buscar")
+        # ---- decidir la acción central ----
+        if rango and not fecha:
+            # "lo más barato en 3 meses" -> rango, portando destino si lo dió
+            return Intencion(
+                accion="rango", rango_meses=rango, destino=destino,
+                pasajeros=pasajeros, barato=barato,
+            )
+        if destino or huella:
+            if destino:
+                return Intencion(
+                    accion="elegir_destino", destino=destino, fecha=fecha,
+                    pasajeros=pasajeros, barato=barato,
+                )
+            if fecha:
+                return Intencion(
+                    accion="buscar", fecha=fecha, pasajeros=pasajeros, barato=barato,
+                )
+            return Intencion(accion="buscar", pasajeros=pasajeros, barato=barato)
 
-        destino = normalizar_destino(_quitar_frases(texto))
-        if destino:
-            return Intencion(accion="elegir_destino", destino=destino)
+        if num_opcion:
+            return Intencion(accion="elegir_opcion", numero=num_opcion)
+
+        if pasajeros:
+            return Intencion(accion="pasajeros", pasajeros=pasajeros)
 
         return Intencion(accion="conversacion")
 
@@ -213,47 +225,102 @@ def _coerce_int(v) -> Optional[int]:
         return None
 
 
-_ORDINALES = {
-    "primera": 1, "primero": 1, "1ra": 1, "1ª": 1,
-    "segunda": 2, "segundo": 2, "2da": 2, "2ª": 2,
-    "tercera": 3, "tercero": 3, "3ra": 3, "3ª": 3,
-    "cuarta": 4, "4ta": 4, "quinta": 5, "5ta": 5,
+def _coerce_fecha(v) -> Optional[str]:
+    """Acepta solo fechas ISO válidas (YYYY-MM-DD)."""
+    if not isinstance(v, str):
+        return None
+    try:
+        datetime.datetime.strptime(v, "%Y-%m-%d")
+        return v
+    except (ValueError, TypeError):
+        return None
+
+
+_PASAJEROS_RE = [
+    re.compile(r"(?:somos|hay|viajan|somos solo|solo)\s+(\d+)(?:\s*(?:personas|viajeros|adultos|pasajeros))?\b"),
+    re.compile(r"(?:para|viajan)\s+(\d+)\s*(?:personas|viajeros|adultos|pasajeros)\b"),
+]
+
+
+def _extraer_pasajeros(t: str) -> int | None:
+    for rx in _PASAJEROS_RE:
+        m = rx.search(t)
+        if m:
+            n = int(m.group(1))
+            if 1 <= n <= 20:
+                return n
+    return None
+
+
+_MESES = {
+    "enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5, "junio": 6,
+    "julio": 7, "agosto": 8, "septiembre": 9, "setiembre": 9, "octubre": 10,
+    "noviembre": 11, "diciembre": 12,
 }
 
 
-def _extraer_numero_texto(t: str) -> int | None:
+def _extraer_fecha(t: str) -> str | None:
+    """Traduce referencias temporales a una fecha ISO (día típico del periodo).
+    ("a principios de enero de 2027" -> "2027-01-05")"""
+    t = t.lower()
+    anyo = None
+    for y in range(2025, 2032):
+        if f" {y}" in t or t.endswith(f" {y}") or re.search(rf"\b{y}\b", t):
+            anyo = y
+            break
+
+    periodo = None
+    if any(w in t for w in ("principio", "inicio", "comienzo", "arranque", "a inicios")):
+        periodo = 5
+    elif any(w in t for w in ("mediad", "mitad", "media de")):
+        periodo = 15
+    elif any(w in t for w in ("fin", "final", "últim", "ultim", "cierre de")):
+        periodo = 25
+
+    # día explícito: "el 10 de enero de 2027"
+    m = re.search(r"\b(\d{1,2})\s+de\s+(\w+)", t)
+    if m and m.group(2) in _MESES:
+        dia = min(28, int(m.group(1)))
+        return _armar(anyo, _MESES[m.group(2)], dia)
+
+    # mes + (año)
+    for nombre, n in _MESES.items():
+        if nombre in t or (len(nombre) > 4 and nombre[:4] in t):
+            dia = periodo or 15
+            return _armar(anyo, n, dia)
+
+    return None
+
+
+def _armar(anyo: int | None, mes: int, dia: int) -> str | None:
+    import datetime as _dt
+    a = anyo or _dt.datetime.now().year
+    if a < _dt.datetime.now().year:
+        a = _dt.datetime.now().year
+    if a > 2031:
+        a = 2031
+    try:
+        return _dt.date(a, mes, dia).isoformat()
+    except ValueError:
+        return None
+
+
+def _extraer_opcion(t: str, n_recientes: int) -> int | None:
+    """'la 2', 'la opción 3', 'segunda' -> índice si hay opciones mostradas."""
     for palabra, n in _ORDINALES.items():
         if palabra in t:
-            return n
-    m = re.search(r"(\d+)", t)
-    return int(m.group(1)) if m else None
+            return n if n <= n_recientes else None
+    m = re.search(r"(?:la\s+|la\s+opci[oó]n\s*|el\s+|n[uú]mero\s*)(\d+)", t)
+    if m:
+        n = int(m.group(1))
+        return n if n <= n_recientes else None
+    return None
 
 
 def _huele_busqueda(t: str) -> bool:
     return any(
         w in t for w in ("busca", "busco", "buscar", "opciones", "presupuesto", "viajar", "barato")
     )
-
-
-_FRASES_PREVIAS = (
-    "quiero ir a ",
-    "quiero viajar a ",
-    "me gustaria ir a ",
-    "para ir a ",
-    "vamos a ",
-    "estoy buscando ",
-    "es decir ",
-    "hacia ",
-)
-
-
-def _quitar_frases(texto: str) -> str:
-    """Quita muletillas iniciales para que la normalización difusa pegue mejor."""
-    t = texto.lower().strip()
-    for frase in _FRASES_PREVIAS:
-        if t.startswith(frase):
-            return t[len(frase):]
-    return t
 
 
 def _extraer_rango(t: str) -> int | None:
