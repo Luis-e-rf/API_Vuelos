@@ -1,16 +1,22 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import random
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Optional
 
-import httpx
-
-from app.config import AMADEUS_API_KEY, AMADEUS_API_SECRET
+from app.config import FAST_FLIGHTS_ENABLED
 
 log = logging.getLogger(__name__)
+
+try:  # dependencia opcional: si no está instalada, usamos solo el simulador
+    from fast_flights import FlightQuery, Passengers, create_query, get_flights
+
+    _FAST_FLIGHTS_OK = True
+except Exception:  # noqa: BLE001
+    _FAST_FLIGHTS_OK = False
 
 # Códigos IATA de los aeropuertos que conocemos (Colombia + algunos intl)
 _AEROPUERTOS = {
@@ -30,8 +36,7 @@ _AEROPUERTOS = {
     "Cancun": "CUN",
 }
 
-# Precios aproximados de tiquete ida y vuelta en COP para un adulto.
-# Base usada por el motor simulado hasta conectar Amadeus.
+# Precios aproximados de tiquete (COP) para el motor simulado de emergencia.
 _PRECIOS_COP = {
     "Bogota": 0,
     "Medellin": 380_000,
@@ -61,6 +66,7 @@ class OpcionVuelo:
     aerolinea: str
     duracion: str
     origen: str
+    real: bool = False  # True si vino de Google Flights (fast-flights)
 
     def cabecera(self) -> str:
         return (
@@ -70,14 +76,14 @@ class OpcionVuelo:
 
 
 class FlightClient:
-    """Busca vuelos reales (Amadeus) si hay credenciales; si no, simula.
+    """Busca vuelos en vivo (Google Flights vía fast-flights) si es posible;
+    si falla por red/cuota, cae a un motor simulado determinístico.
 
-    Así el bot funciona desde ya sin tarjeta ni cuentas, y cuando el usuario
-    cree sus credenciales Amadeus (gratis en test) pasa a datos reales.
+    Así el bot funciona desde ya gratis y da precios reales normalmente.
     """
 
     def __init__(self) -> None:
-        self.amadeus = bool(AMADEUS_API_KEY and AMADEUS_API_SECRET)
+        self.real = _FAST_FLIGHTS_OK and FAST_FLIGHTS_ENABLED
 
     async def buscar(
         self,
@@ -87,86 +93,83 @@ class FlightClient:
         fecha: Optional[str] = None,
         numero: int = 3,
     ) -> list[OpcionVuelo]:
-        fechas = _construir_fechas(fecha)
-        if self.amadeus:
-            reales = await self._buscar_amadeus(origen, numero)
+        if self.real:
+            reales = await self._buscar_google(origen, fecha or fecha_default(), numero)
             if reales:
                 return reales
-            log.warning("Amadeus sin respuesta -> uso el motor simulado")
-        return self._simular(origen, presupuesto_cop, fechas, numero)
+            log.warning("Google Flights sin respuesta -> crea motor simulado")
+        return self._simular(origen, presupuesto_cop, fecha, numero)
 
-    # --- implementación --------------------------------------------------
+    # --- Google Flights (vivo) ----------------------------------------------
 
-    async def _buscar_amadeus(self, origen: str, numero: int) -> list[OpcionVuelo]:
-        """Busca ofertas con Amadeus v2 flight-offers (entorno de prueba, gratis)."""
+    async def _buscar_google(
+        self, origen: str, fecha: str, numero: int
+    ) -> list[OpcionVuelo]:
+        """Pide precios reales a Google Flights por origen->varios destinos."""
         origen_iata = _AEROPUERTOS.get(origen)
         if not origen_iata:
-            log.warning("Amadeus: origen %r sin IATA", origen)
+            log.warning("Google: origen %r sin IATA", origen)
             return []
 
-        async with httpx.AsyncClient(timeout=10) as client:
-            try:
-                r = await client.post(
-                    "https://test.api.amadeus.com/v1/security/oauth2/token",
-                    data={
-                        "grant_type": "client_credentials",
-                        "client_id": AMADEUS_API_KEY,
-                        "client_secret": AMADEUS_API_SECRET,
-                    },
-                )
-                r.raise_for_status()
-                token = r.json()["access_token"]
-            except Exception as exc:  # noqa: BLE001
-                log.warning("Amadeus token falló: %s", exc)
-                return []
+        destinos = [
+            c for c in _AEROPUERTOS
+            if c and c != origen and _AEROPUERTOS[c] != origen_iata
+        ][:6]
+        salida: list[OpcionVuelo] = []
 
-            destinos = [c for c in _AEROPUERTOS if c != origen][:5]
-            salida: list[OpcionVuelo] = []
-            for d in destinos:
-                try:
-                    r = await client.get(
-                        "https://test.api.amadeus.com/v2/shopping/flight-offers",
-                        params={
-                            "originLocationCode": origen_iata,
-                            "destinationLocationCode": _AEROPUERTOS[d],
-                            "departureDate": fecha_siguiente_sabado(),
-                            "adults": 1,
-                            "currencyCode": "COP",
-                            "max": 2,
-                            "oneWay": "false",
-                        },
-                        headers={"Authorization": f"Bearer {token}"},
-                    )
-                    r.raise_for_status()
-                    for oferta in r.json().get("data", []):
-                        precio = float(oferta["price"]["total"])
-                        if precio > 0 and len(salida) < numero:
-                            salida.append(
-                                OpcionVuelo(
-                                    destino=d,
-                                    fecha=fecha_siguiente_sabado(),
-                                    precio_cop=round(precio),
-                                    aerolinea=_aerolinea(oferta),
-                                    duracion=_duracion(oferta),
-                                    origen=origen,
-                                )
+        async def _uno(dest: str) -> None:
+            try:
+                resultado = await asyncio.to_thread(
+                    get_flights,
+                    create_query(
+                        flights=[
+                            FlightQuery(
+                                date=fecha,
+                                from_airport=origen_iata,
+                                to_airport=_AEROPUERTOS[dest],
                             )
-                except Exception as exc:  # noqa: BLE001
-                    log.warning("Amadeus %r falló: %s", d, exc)
-                    continue
-                if len(salida) >= numero:
-                    break
-        return salida
+                        ],
+                        seat="economy",
+                        trip="one-way",
+                        passengers=Passengers(adults=1, children=0),
+                        language="es",
+                        currency="COP",
+                    ),
+                )
+                mejor = None
+                for f in resultado:  # cada f : Flights (precio en COP)
+                    precio = int(f.price)
+                    if mejor is None or precio < mejor.price:
+                        mejor = f
+                if mejor is None:
+                    return
+                salida.append(
+                    OpcionVuelo(
+                        destino=dest,
+                        fecha=fecha,
+                        precio_cop=mejor.price,
+                        aerolinea=", ".join(mejor.airlines) or "Aerolínea",
+                        duracion=_duracion_de(mejor),
+                        origen=origen,
+                        real=True,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Google Flights %r falló: %s", dest, exc)
+
+        await asyncio.gather(*[_uno(d) for d in destinos])
+        salida.sort(key=lambda o: o.precio_cop)
+        return salida[:numero]
+
+    # --- Simulador de emergencia -------------------------------------------
 
     def _simular(
-        self, origen: str, presupuesto_cop: int, fechas: list[str], numero: int
+        self, origen: str, presupuesto_cop: int, fecha: Optional[str], numero: int
     ) -> list[OpcionVuelo]:
-        """Genera opciones realistas dentro del presupuesto (motor de demo).
-
-        Es determinístico por fecha, para que no cambien entre llamadas.
-        """
+        """Opciones realistas dentro del presupuesto (solo offline/degradado)."""
         origen = origen or "Bogota"
-        rnd = random.Random(f"{origen}|{fechas[0]}")
+        fecha = fecha or fecha_default()
+        rnd = random.Random(f"{origen}|{fecha}")
         destinos = sorted(
             (d for d in _PRECIOS_COP if d != origen and _PRECIOS_COP[d] <= presupuesto_cop),
             key=lambda d: _PRECIOS_COP[d],
@@ -178,7 +181,7 @@ class FlightClient:
             opciones.append(
                 OpcionVuelo(
                     destino=d,
-                    fecha=fechas[i % len(fechas)],
+                    fecha=_proxima_fecha(fecha, i),
                     precio_cop=precio,
                     aerolinea=rnd.choice(_AEROLINEAS_SIM),
                     duracion=rnd.choice(["1h 20m", "1h 50m", "2h 05m", "1h 40m"]),
@@ -191,7 +194,8 @@ class FlightClient:
 # --- helpers ---------------------------------------------------------
 
 
-def fecha_siguiente_sabado() -> str:
+def fecha_default() -> str:
+    """Fecha de salida sugerida: el próximo sábado (short trip)."""
     hoy = datetime.now()
     dias = (5 - hoy.weekday()) % 7
     if dias == 0:
@@ -199,24 +203,17 @@ def fecha_siguiente_sabado() -> str:
     return (hoy + timedelta(days=dias)).strftime("%Y-%m-%d")
 
 
-def _construir_fechas(fecha: Optional[str]) -> list[str]:
-    base = datetime.now()
-    if fecha and fecha.strip().lower() in ("sabado", "sábado"):
-        return [fecha_siguiente_sabado()]
-    return [(base + timedelta(days=d)).strftime("%Y-%m-%d") for d in (1, 2, 3)]
+def _proxima_fecha(base: str, offset: int) -> str:
+    return (
+        datetime.strptime(base, "%Y-%m-%d") + timedelta(days=offset)
+    ).strftime("%Y-%m-%d")
 
 
-def _duracion(oferta: dict) -> str:
+def _duracion_de(mejor) -> str:
     try:
-        seg = int(oferta["itineraries"][0]["duration"][2:-1])  # "PT1H20M"
+        # SingleFlight.duration en minutos
+        seg = mejor.flights[0].duration
         h, m = divmod(seg, 60)
         return f"{h}h {m:02d}m"
     except Exception:  # noqa: BLE001
         return "—"
-
-
-def _aerolinea(oferta: dict) -> str:
-    try:
-        return oferta["itineraries"][0]["segments"][0]["carrierCode"]
-    except Exception:  # noqa: BLE001
-        return "Aerolínea"

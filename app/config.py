@@ -35,8 +35,9 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 # Nombre exacto del modelo a usar (si vacío, se recorren los candidatos en orden).
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "")
 
-# Amadeus (vuelos reales). Si vacío, el FlightClient usa su motor simulado de demo.
-AMADEUS_API_KEY = os.environ.get("AMADEUS_API_KEY", "")
-AMADEUS_API_SECRET = os.environ.get("AMADEUS_API_SECRET", "")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+
+# Vuelos reales por Google Flights (fast-flights). "1" con la dependencia instalada
+# activa los datos en vivo; si falla la red, cae al simulador interno. Vacío = simulador.
+FAST_FLIGHTS_ENABLED = os.environ.get("FAST_FLIGHTS_ENABLED", "1") == "1"
