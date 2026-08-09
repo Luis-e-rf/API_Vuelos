@@ -22,11 +22,24 @@ class TelegramAdapter:
         )
 
     async def enviar(self, chat_id: str, salida: MensajeSalida) -> None:
-        payload: dict = {"chat_id": chat_id, "text": salida.texto}
-        if salida.opciones:
-            payload["reply_markup"] = {
-                "keyboard": [[o] for o in salida.opciones],
-                "one_time_keyboard": True,
-            }
         async with httpx.AsyncClient(timeout=15) as client:
+            if salida.foto_url:
+                payload = {
+                    "chat_id": chat_id,
+                    "photo": salida.foto_url,
+                    "caption": salida.texto,
+                }
+                if salida.opciones:
+                    payload["reply_markup"] = self._keyboard(salida.opciones)
+                await client.post(f"{TELEGRAM_API}/sendPhoto", json=payload)
+                return
+            payload: dict = {"chat_id": chat_id, "text": salida.texto}
+            if salida.opciones:
+                payload["reply_markup"] = self._keyboard(salida.opciones)
             await client.post(f"{TELEGRAM_API}/sendMessage", json=payload)
+
+    def _keyboard(self, opciones: list[str]) -> dict:
+        return {
+            "keyboard": [[o] for o in opciones],
+            "one_time_keyboard": True,
+        }

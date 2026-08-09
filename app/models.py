@@ -20,6 +20,7 @@ class MensajeSalida:
 
     texto: str
     opciones: list[str] = field(default_factory=list)
+    foto_url: Optional[str] = None  # si se set, se manda sendPhoto (Telegram)
 
 
 @dataclass
@@ -35,6 +36,11 @@ class Perfil:
     nombre: Optional[str] = None
     ultimo_destino_sugerido: Optional[str] = None
     esperando: Optional[str] = None
+    # Últimas opciones mostradas (para referencias como "la 3")
+    opciones_recientes: list[dict] = field(default_factory=list)
+    # Número de pasajeros (p. ej. "somos 2")
+    pasajeros: int = 1
+    viajes_guardados: list[dict] = field(default_factory=list)
     timestamps: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:

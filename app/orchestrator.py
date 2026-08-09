@@ -6,8 +6,11 @@ import re
 from typing import Optional, Protocol
 
 from app import llm_router
-from app.flight_client import FlightClient
+from app.destinos import normalizar_destino
+from app.flight_client import FlightClient, OpcionVuelo
 from app.formatter import formatear_opciones
+from app.fotos import foto_destino
+from app.intents import Interpretador
 from app.models import MensajeEntrada, MensajeSalida, Perfil
 from app.profile_store import ProfileStore
 
@@ -29,14 +32,16 @@ class Sender:
 
 
 class Orquestador:
-    """Centro de la conversación. Canal-agnóstico: recibe MensajeEntrada y
-    produce respuestas vía sender. Usa el LLM Router si hay proveedor, con
-    fallback a reglas locales.
+    """Centro de la conversación. Canal-agnóstico.
+
+    El entendimiento del texto libre lo hace el Interpretador (LLM, con
+    heurística local de respaldo). El orquestador solo despacha la Intencion.
     """
 
     def __init__(self, store: Optional[ProfileStore] = None) -> None:
         self.store = store or ProfileStore()
         self.flight = FlightClient()
+        self.interprete = Interpretador()
 
     async def procesar(self, mensaje: MensajeEntrada, sender: Sender) -> None:
         perfil = await self.store.leer(mensaje.chat_id, mensaje.canal)
@@ -46,10 +51,10 @@ class Orquestador:
         salida = await self._construir_respuesta(mensaje, perfil)
         await sender.enviar(mensaje.chat_id, salida)
 
-    # --- inferencia implícita del perfil ------------------------------
+    # --- inferencia implícita del perfil --------------------------------
 
     def _inferir_perfil(self, m: MensajeEntrada, p: Perfil) -> bool:
-        """Guarda datos que el usuario 'suelta' en cualquier mensaje, sin preguntar."""
+        """Guarda datos que el usuario 'suelta' sin preguntar."""
         cambio = False
 
         monto = _extraer_monto(m.texto)
@@ -58,196 +63,213 @@ class Orquestador:
             p.moneda = _detectar_moneda(m.texto)
             cambio = True
 
-        # "300 mil" -> 300.000 (presupuestos en pesos)
-        mil = re.search(r"(\d[\d.,]*)\s*mil", m.texto.lower())
-        if mil and p.presupuesto == (monto or None):
-            p.presupuesto = int(mil.group(1).replace(".", "").replace(",", "")) * 1000
-            p.moneda = "COP"
-            cambio = True
+        if not monto:
+            mil = re.search(r"(\d[\d.,]*)\s*mil", m.texto.lower())
+            if mil:
+                p.presupuesto = int(mil.group(1).replace(".", "").replace(",", "")) * 1000
+                p.moneda = "COP"
+                cambio = True
 
-        # origen — se infiere del mensaje si menciona una ciudad de salida
-        inferido = _inferir_origen(m.texto)
-        if inferido != "Colombia" and inferido != p.origen:
-            p.origen = inferido
-            cambio = True
+        # origen marcado explícitamente ("desde Bogotá", "salgo de X")
+        if _marcador_origen(m.texto):
+            ciudad = normalizar_destino(m.texto)
+            if ciudad and ciudad != p.origen:
+                p.origen = ciudad
+                cambio = True
 
         if p.origen is None and m.ubicacion:
-            # TODO: reverse-geocode lat/long
-            pass
+            pass  # TODO: reverse-geocode lat/long
         return cambio
 
-    # --- construcción de la respuesta ---------------------------------
+    # --- construcción de la respuesta -----------------------------------
 
     async def _construir_respuesta(self, m: MensajeEntrada, p: Perfil) -> MensajeSalida:
-        t = m.texto.strip().lower()
-
-        # 1) Respuestas fijas de sistema (sin LLM)
-        if t in ("/start", "hola", "buenas", "hi"):
-            return MensajeSalida(
-                "¡Hola! Soy tu asistente de vuelos ✈️. Cuéntame con cuánto cuentas "
-                "y hacia dónde quieres ir."
-            )
-        if t in ("/help", "ayuda", "help", "que haces"):
-            return MensajeSalida(
-                "Te ayudo a encontrar vuelos. Dime cosas como:\n"
-                "• 'Quiero irme, tengo 300 dólares'\n"
-                "• '¿Qué hay barato para el 20?'\n"
-                "• 'Busco de Bogotá a Madrid'\n\n"
-                "Sin formularios, voy infiriendo."
-            )
-
-        # 2) Flujo: cambiando presupuesto
-        if "cambiar" in t:
-            p.esperando = "presupuesto"
-            await self.store.guardar(p, m.canal)
-            return MensajeSalida("¡Claro! ¿Con cuánto presupuesto cuentas ahora? (ej: 250 dólares)")
+        t = m.texto.strip()
 
         if p.esperando == "presupuesto" and p.presupuesto is not None:
             p.esperando = None
             await self.store.guardar(p, m.canal)
             return MensajeSalida(
-                f"Perfecto, quedó en {_moneda(p.presupuesto)}. Ahora dime hacia dónde quieres ir "
-                "o pídeme sugerencias.",
+                f"Perfecto, quedó en {_moneda(p.presupuesto)}. ¿Hacia dónde quieres ir?",
                 opciones=["Busca para este presupuesto"],
             )
 
-        # 3) Acciones de búsqueda (el usuario escribe libre o toca el botón)
-        if any(marca in t for marca in ("busca", "busco", "buscar", "presupuesto")):
+        intent = await self.interprete.interpretar(
+            t, opciones_recientes=p.opciones_recientes, presupuesto_actual=p.presupuesto
+        )
+
+        if intent.accion == "saludo":
+            return MensajeSalida(
+                "¡Hola! Soy tu asistente de vuelos ✈️. Cuéntame con cuánto cuentas "
+                "y hacia dónde quieres ir."
+            )
+        if intent.accion == "ayuda":
+            return MensajeSalida(
+                "Te ayudo a encontrar vuelos. Puedes decirme:\n"
+                "• 'busca barato para 600 mil desde Bogotá'\n"
+                "• 'la opción 2' o el nombre de una ciudad\n"
+                "• 'lo más económico en 3 meses'\n"
+                "• 'somos 2 personas'\n\n"
+                "Sin formularios, voy entendiendo poco a poco."
+            )
+        if intent.accion == "cambiar_presupuesto":
+            p.esperando = "presupuesto"
+            await self.store.guardar(p, m.canal)
+            return MensajeSalida("¡Claro! ¿Con cuánto presupuesto cuentas ahora? (ej: 250 dólares)")
+
+        if intent.accion == "pasajeros" and intent.pasajeros:
+            p.pasajeros = max(1, intent.pasajeros)
+            await self.store.guardar(p, m.canal)
+            return MensajeSalida(
+                f"¡Anotado, {p.pasajeros} pasajeros! Los precios que te muestre serán "
+                "por todo el grupo. ¿Busco opciones?",
+                opciones=["Busca para este presupuesto"],
+            )
+
+        if intent.accion == "guardar_viaje" and p.opciones_recientes:
+            guardado = p.opciones_recientes[0]
+            p.viajes_guardados.append(guardado)
+            await self.store.guardar(p, m.canal)
+            return MensajeSalida(
+                f"Guardé tu vuelo a *{guardado.get('destino')}* por "
+                f"{_moneda(guardado.get('precio_cop', 0))}. Escribe 'ver guardados' cuando quieras verlo."
+            )
+
+        if intent.accion == "ver_guardados":
+            if not p.viajes_guardados:
+                return MensajeSalida(
+                    "Todavía no has guardado viajes. Cuando elijas uno, dime 'guarda este viaje'."
+                )
+            lineas = "Tus viajes guardados:\n" + "\n".join(
+                f"• {v.get('destino')} · {_moneda(v.get('precio_cop', 0))} · {v.get('fecha', '')}"
+                for v in p.viajes_guardados
+            )
+            return MensajeSalida(lineas)
+
+        if intent.accion == "elegir_opcion" and intent.numero:
+            return await self._respuesta_opcion(p, m, intent.numero)
+
+        if intent.accion == "elegir_destino" and intent.destino:
+            return await self._respuesta_destino(p, m, intent.destino)
+
+        if intent.accion == "rango" and intent.rango_meses:
+            return await self._respuesta_rango(p, m, intent.rango_meses)
+
+        if intent.accion in ("buscar", "rango"):
             return await self._respuesta_buscar(p, m)
 
-        # 3b) El usuario eligió un destino escribiendo solo el nombre de la ciudad
-        ciudad = _menciona_ciudad(m.texto)
-        if ciudad and p.presupuesto is not None and p.origen:
-            return await self._respuesta_destino(p, m, ciudad)
-
-        # 4) Conversación libre: usa LLM si hay proveedor, si no, fallback local
         return await self._respuesta_conversacion(m, p)
+
+    # --- respuestas concretas -------------------------------------------
 
     async def _respuesta_buscar(self, p: Perfil, m: MensajeEntrada) -> MensajeSalida:
         if p.presupuesto is None:
             return MensajeSalida("Primero cuéntame tu presupuesto (ej: '300 dólares').")
-
-        origen = p.origen or _inferir_origen(m.texto)
+        origen = p.origen or "Bogota"
         cop = _a_cop(p.presupuesto, p.moneda)
-        opciones = await self.flight.buscar(origen, cop, p.moneda)
-
-        if opciones:
-            log.info("Motor de vuelos: %s opción(es) para chat %s", len(opciones), m.chat_id)
-            texto = formatear_opciones(opciones, cop)
-            return MensajeSalida(
-                texto,
-                opciones=["Cambiar presupuesto", "Otras fechas"],
-            )
-
-        prompt = (
-            f"El usuario quiere viajar próximamente. Origen probable: {origen} (país de habla hispana).\n"
-            f"Presupuesto: {_describir_presupuesto(p)}.\n"
-            f"Contexto que dijo el usuario: '{m.texto}'.\n"
-            "Instrucciones: NO asumas que el usuario es estadounidense ni que el dinero son dólares si "
-            "es moneda local. Sugiere 2-4 destinos REALISTAS para un fin de semana con ese presupuesto. "
-            "Si el presupuesto es bajo, prioriza destinos cortos y cercanos (para Colombia: Girardot, "
-            "Melgar, Santa Marta, Cartagena, Villa de Leyva...). Da rangos de precio en la moneda del "
-            "usuario, menciona si es un buen presupuesto para el destino y termina con una pregunta cálida."
-        )
-        texto, proveedor = await llm_router.generar(_SYSTEM_PERSONA, prompt)
-        if texto:
-            log.info("LLM (%s) respondió búsqueda para chat %s", proveedor, m.chat_id)
-            p.ultimo_destino_sugerido = "sugerido"
-            await self.store.guardar(p, m.canal)
-            return MensajeSalida(texto, opciones=["Buscar vuelos", "Cambiar presupuesto"])
-        # fallback sin LLM
-        return MensajeSalida(
-            f"Con {_moneda(p.presupuesto)} desde {p.origen or 'tu ciudad'} no encontré opciones "
-            "ahora mismo. Prueba de nuevo más tarde o cambia el presupuesto.",
-            opciones=["Cambiar presupuesto"],
+        return await self._mostrar(
+            p,
+            m,
+            await self.flight.buscar(origen, cop, p.moneda, pasajeros=p.pasajeros),
+            cop,
+            "Aquí tienes opciones que se ajustan a tu presupuesto:",
         )
 
     async def _respuesta_destino(self, p: Perfil, m: MensajeEntrada, ciudad: str) -> MensajeSalida:
-        """El usuario eligió un destino: buscamos vuelos previa a esa ciudad concreta."""
+        if p.presupuesto is None:
+            return MensajeSalida("Primero cuéntame tu presupuesto (ej. '300 dólares').")
         origen = p.origen or "Bogota"
-        cop = _a_cop(p.presupuesto, p.moneda)
+        conduz = _a_cop(p.presupuesto, p.moneda)
         p.destino = ciudad
         await self.store.guardar(p, m.canal)
-        numero = 3
-        opciones = await self.flight.buscar(origen, cop, p.moneda, destino=ciudad, numero=numero)
-        if opciones:
-            texto = formatear_opciones(opciones, cop)
-            texto = f"¡Excelente elección! {texto}"
-            return MensajeSalida(texto, opciones=["Cambiar presupuesto", "Otras fechas"])
-        return MensajeSalida(
-            f"Para ir a *{ciudad}* con {_moneda(p.presupuesto)} no encontré opciones baratas ahora. "
-            "¿Probamos otra ciudad o ajustamos el presupuesto?",
-            opciones=["Cambiar presupuesto", "Busca para este presupuesto"],
+        opciones = await self.flight.buscar(origen, conduz, p.moneda, destino=ciudad, pasajeros=p.pasajeros)
+        if not opciones:
+            return MensajeSalida(
+                f"Para ir a *{ciudad}* con {_moneda(p.presupuesto)} no encontré opciones baratas ahora. "
+                "¿Probamos otra ciudad o ajustamos el presupuesto?",
+                opciones=["Cambiar presupuesto", "Busca para este presupuesto"],
+            )
+        return await self._mostrar(p, m, opciones, conduz, f"¡Excelente elección! Vuelos a *{ciudad}* 😊")
+
+    async def _respuesta_opcion(self, p: Perfil, m: MensajeEntrada, numero: int) -> MensajeSalida:
+        recientes = p.opciones_recientes
+        if numero < 1 or numero > len(recientes):
+            return MensajeSalida("No reconozco esa opción. Escribe el nombre del destino o di 'busca'.")
+        destino = recientes[numero - 1].get("destino")
+        if not destino:
+            return MensajeSalida("Ups, no tengo los datos de esa opción. Dime 'busca' para refrescar.")
+        return await self._respuesta_destino(p, m, destino)
+
+    async def _respuesta_rango(self, p: Perfil, m: MensajeEntrada, meses: int) -> MensajeSalida:
+        if p.presupuesto is None:
+            return MensajeSalida("Primero cuéntame tu presupuesto.")
+        origen = p.origen or "Bogota"
+        conduz = _a_cop(p.presupuesto, p.moneda)
+        opciones = await self.flight.buscar_rango(
+            origen, conduz, meses, destino=p.destino, pasajeros=p.pasajeros
         )
+        if not opciones:
+            return MensajeSalida(f"Por ahora no encontré vuelos en los próximos {meses} meses. Intenta otro rango.")
+        return await self._mostrar(p, m, opciones, conduz, f"Lo más económico en los próximos {meses} meses:")
 
     async def _respuesta_conversacion(self, m: MensajeEntrada, p: Perfil) -> MensajeSalida:
         contexto = (
-            f"Perfil: presupuesto={p.presupuesto}, moneda={p.moneda}, origen={p.origen or 'desconocido'}. "
-            f"Mensaje: {m.texto}"
+            f"Perfil: presupuesto={p.presupuesto}, moneda={p.moneda}, origen={p.origen or 'desconocido'}, "
+            f"pasajeros={p.pasajeros}. Mensaje del usuario: {m.texto}"
         )
         texto, proveedor = await llm_router.generar(_SYSTEM_PERSONA, contexto)
         if texto:
-            log.info("LLM (%s) respondió conversación para chat %s", proveedor, m.chat_id)
+            log.info("LLM (%s) respondió para chat %s", proveedor, m.chat_id)
             return MensajeSalida(texto, opciones=["Busca para este presupuesto", "Ayuda"])
-        # fallback local (sin LLM configurado)
         if p.presupuesto is not None:
-            desde = p.origen or "tu ciudad"
             return MensajeSalida(
-                f"Con {_moneda(p.presupuesto)} desde {desde} ya te puedo buscar destinos.",
+                f"Con {_moneda(p.presupuesto)} desde {p.origen or 'tu ciudad'} ya te puedo buscar destinos.",
                 opciones=["Busca para este presupuesto", "Cambiar presupuesto"],
             )
-        if any(k in m.texto.lower() for k in ("vuelo", "viajar", "viaje", "barato")):
-            return MensajeSalida("Genial, dime tu presupuesto (ej: '200 dólares') y te doy opciones.")
-        return MensajeSalida(
-            "Te leo, pero aún estoy en fase de prueba. Escribe /help para ver qué entiendo."
-        )
+        if re.search(r"vuelo|viajar|viaje|barato", m.texto.lower()):
+            return MensajeSalida("Genial, dime tu presupuesto (ej. '200 dólares') y te doy opciones.")
+        return MensajeSalida("Te leo 😊. Escribe /help para ver cómo puedo ayudarte.")
+
+    # --- cómo mostrar opciones -----------------------------------------
+
+    async def _mostrar(
+        self, p: Perfil, m: MensajeEntrada, opciones: list[OpcionVuelo], cop: int, titulo: str
+    ) -> MensajeSalida:
+        p.opciones_recientes = [_bruto(o) for o in opciones]
+        p.ultimo_destino_sugerido = opciones[0].destino if opciones else None
+        await self.store.guardar(p, m.canal)
+        texto = f"{titulo}\n\n{formatear_opciones(opciones, cop)}"
+        foto = await foto_destino(opciones[0].destino) if opciones else None
+        return MensajeSalida(texto, opciones=["Cambiar presupuesto", "Más fechas"], foto_url=foto)
 
 
 # --- helpers ---------------------------------------------------------
 
 
+def _bruto(o: OpcionVuelo) -> dict:
+    return {
+        "destino": o.destino,
+        "fecha": o.fecha,
+        "precio_cop": o.precio_cop,
+        "aerolinea": o.aerolinea,
+    }
+
+
+def _marcador_origen(texto: str) -> bool:
+    t = texto.lower()
+    return any(m in t for m in ("desde", "salgo de", "me voy de", "parto de", "saliendo de"))
+
+
 def _extraer_monto(texto: str) -> Optional[int]:
     m = PRESUPUESTO_RE.search(texto)
-    if not m:
-        return None
+    return _limpio(m.group("cant")) if m else None
+
+
+def _limpio(s: str) -> Optional[int]:
     try:
-        return int(m.group("cant").replace(".", "").replace(",", ""))
+        return int(s.replace(".", "").replace(",", ""))
     except (ValueError, AttributeError):
         return None
-
-
-_CiUDADES_CO = {
-    "bogota": "Bogota",
-    "bogotá": "Bogota",
-    "medellin": "Medellin",
-    "medellín": "Medellin",
-    "cali": "Cali",
-    "barranquilla": "Barranquilla",
-    "cartagena": "Cartagena",
-    "santa marta": "Santa Marta",
-    "leticia": "Leticia",
-    "villa de ley": "Villa de Leyva",
-}
-
-_ORIGEN_MARCADORES = ("desde", "parto", "salgo", "saliendo", "salgo de", "me voy de", "salida de")
-
-
-def _menciona_ciudad(texto: str) -> Optional[str]:
-    """Devuelve la primera ciudad mencionada en el mensaje (si hay)."""
-    t = texto.lower()
-    for token, ciudad in _CiUDADES_CO.items():
-        if token in t:
-            return ciudad
-    return None
-
-
-def _inferir_origen(texto: str) -> str:
-    """Detecta la ciudad de salida SOLO si el texto incluye marcador de salida."""
-    t = texto.lower()
-    ciudad = _menciona_ciudad(texto)
-    if ciudad and any(marc in t for marc in _ORIGEN_MARCADORES):
-        return ciudad
-    return "Colombia"
 
 
 def _detectar_moneda(texto: str) -> str:
@@ -261,8 +283,11 @@ def _detectar_moneda(texto: str) -> str:
     return "COP"
 
 
+def _moneda(numero: int) -> str:
+    return f"${numero:,.0f}".replace(",", ".")
+
+
 def _describir_presupuesto(p: Perfil) -> str:
-    """Describa el presupuesto con su moneda y un equivalente en USD para el LLM."""
     moneda = p.moneda or "COP"
     if moneda == "COP":
         usd = round(p.presupuesto / 4000) if p.presupuesto else 0
@@ -270,12 +295,7 @@ def _describir_presupuesto(p: Perfil) -> str:
     return f"{p.presupuesto:,} {moneda}"
 
 
-def _moneda(numero: int) -> str:
-    return f"${numero:,.0f}".replace(",", ".")
-
-
 def _a_cop(monto: int, moneda: Optional[str]) -> int:
-    """Convierte el presupuesto del perfil a COP para el motor de vuelos."""
     if moneda == "USD":
         return round(monto * 4000)
     if moneda == "EUR":

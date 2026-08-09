@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from app.config import FAST_FLIGHTS_ENABLED
+from app.destinos import DESTINOS
 
 log = logging.getLogger(__name__)
 
@@ -18,23 +19,9 @@ try:  # dependencia opcional: si no está instalada, usamos solo el simulador
 except Exception:  # noqa: BLE001
     _FAST_FLIGHTS_OK = False
 
-# Códigos IATA de los aeropuertos que conocemos (Colombia + algunos intl)
-_AEROPUERTOS = {
-    "Bogota": "BOG",
-    "Medellin": "MDE",
-    "Cali": "CLO",
-    "Barranquilla": "BAQ",
-    "Cartagena": "CTG",
-    "Santa Marta": "SMR",
-    "Villa de Leyva": "BOG",
-    "Leticia": "LET",
-    "Miami": "MIA",
-    "Madrid": "MAD",
-    "Lima": "LIM",
-    "Quito": "UIO",
-    "Panama": "PTY",
-    "Cancun": "CUN",
-}
+# Códigos IATA de los aeropuertos que conocemos (Colombia + algunos intl).
+# Fuente única en app/destinos.py; aquí solo el alias para compatibilidad.
+_AEROPUERTOS = DESTINOS
 
 # Precios aproximados de tiquete (COP) para el motor simulado de emergencia.
 _PRECIOS_COP = {
@@ -93,15 +80,43 @@ class FlightClient:
         fecha: Optional[str] = None,
         numero: int = 3,
         destino: Optional[str] = None,
+        pasajeros: int = 1,
     ) -> list[OpcionVuelo]:
         if self.real:
             reales = await self._buscar_google(
                 origen, fecha or fecha_default(), numero, destino=destino
             )
             if reales:
-                return reales
+                return [_por_pasajeros(o, pasajeros) for o in reales]
             log.warning("Google Flights sin respuesta -> crea motor simulado")
-        return self._simular(origen, presupuesto_cop, fecha, numero, destino)
+        opciones = self._simular(origen, presupuesto_cop, fecha, numero, destino)
+        return [_por_pasajeros(o, pasajeros) for o in opciones]
+
+    async def buscar_rango(
+        self,
+        origen: str,
+        presupuesto_cop: int,
+        meses: int,
+        moneda: Optional[str] = None,
+        destino: Optional[str] = None,
+        numero: int = 3,
+        pasajeros: int = 1,
+    ) -> list[OpcionVuelo]:
+        """Busca la opción más barata dentro de los próximos `meses` meses.
+
+        Prueba un fin de semana por mes (sábado) y devuelve las más baratas.
+        """
+        hoy = datetime.now()
+        fechas = []
+        for m in range(min(meses, 5)):  # máx 5 consultas para no abusar de Google
+            fechas.append(_sabado(hoy + timedelta(days=30 * m)))
+        mejores: list[OpcionVuelo] = []
+        for f in fechas:
+            opciones = await self._buscar_google(origen, f, numero, destino=destino)
+            for o in opciones:
+                mejores.append(o)
+        mejores.sort(key=lambda o: o.precio_cop)
+        return [_por_pasajeros(o, pasajeros) for o in mejores[:numero]]
 
     # --- Google Flights (vivo) ----------------------------------------------
 
@@ -171,7 +186,7 @@ class FlightClient:
 
     # --- Simulador de emergencia -------------------------------------------
 
-def _simular(
+    def _simular(
         self, origen: str, presupuesto_cop: int, fecha: Optional[str], numero: int,
         destino: Optional[str] = None,
     ) -> list[OpcionVuelo]:
@@ -206,11 +221,19 @@ def _simular(
 
 def fecha_default() -> str:
     """Fecha de salida sugerida: el próximo sábado (short trip)."""
-    hoy = datetime.now()
-    dias = (5 - hoy.weekday()) % 7
-    if dias == 0:
-        dias = 7
-    return (hoy + timedelta(days=dias)).strftime("%Y-%m-%d")
+    return _sabado(datetime.now())
+
+
+def _sabado(base: datetime) -> str:
+    dias = (5 - base.weekday()) % 7
+    dias = dias or 7
+    return (base + timedelta(days=dias)).strftime("%Y-%m-%d")
+
+
+def _por_pasajeros(o: OpcionVuelo, pasajeros: int) -> OpcionVuelo:
+    if pasajeros and pasajeros > 1:
+        o.precio_cop = int(o.precio_cop * pasajeros / 1000) * 1000
+    return o
 
 
 def _proxima_fecha(base: str, offset: int) -> str:
