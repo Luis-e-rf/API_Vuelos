@@ -32,7 +32,11 @@ UPSTASH_REDIS_REST_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
 
 # LLM: se recorren en orden, cada une tiene su free tier. Vacío = se usa fallback local.
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-# Nombre exacto del modelo a usar (si vacío, se prueban los candidatos en orden).
+# Nombre exacto del modelo a usar (si vacío, se recorren los candidatos en orden).
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "")
+
+# Amadeus (vuelos reales). Si vacío, el FlightClient usa su motor simulado de demo.
+AMADEUS_API_KEY = os.environ.get("AMADEUS_API_KEY", "")
+AMADEUS_API_SECRET = os.environ.get("AMADEUS_API_SECRET", "")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")

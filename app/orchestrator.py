@@ -6,6 +6,8 @@ import re
 from typing import Optional, Protocol
 
 from app import llm_router
+from app.flight_client import FlightClient
+from app.formatter import formatear_opciones
 from app.models import MensajeEntrada, MensajeSalida, Perfil
 from app.profile_store import ProfileStore
 
@@ -34,6 +36,7 @@ class Orquestador:
 
     def __init__(self, store: Optional[ProfileStore] = None) -> None:
         self.store = store or ProfileStore()
+        self.flight = FlightClient()
 
     async def procesar(self, mensaje: MensajeEntrada, sender: Sender) -> None:
         perfil = await self.store.leer(mensaje.chat_id, mensaje.canal)
@@ -120,6 +123,17 @@ class Orquestador:
             return MensajeSalida("Primero cuéntame tu presupuesto (ej: '300 dólares').")
 
         origen = p.origen or _inferir_origen(m.texto)
+        cop = _a_cop(p.presupuesto, p.moneda)
+        opciones = await self.flight.buscar(origen, cop, p.moneda)
+
+        if opciones:
+            log.info("Motor de vuelos: %s opción(es) para chat %s", len(opciones), m.chat_id)
+            texto = formatear_opciones(opciones, cop)
+            return MensajeSalida(
+                texto,
+                opciones=["Cambiar presupuesto", "Otras fechas"],
+            )
+
         prompt = (
             f"El usuario quiere viajar próximamente. Origen probable: {origen} (país de habla hispana).\n"
             f"Presupuesto: {_describir_presupuesto(p)}.\n"
@@ -138,8 +152,8 @@ class Orquestador:
             return MensajeSalida(texto, opciones=["Buscar vuelos", "Cambiar presupuesto"])
         # fallback sin LLM
         return MensajeSalida(
-            f"Con {_moneda(p.presupuesto)} desde {p.origen or 'tu ciudad'} te sugeriré opciones pronto. "
-            "Estoy en fase de prueba (aún sin motor de vuelos).",
+            f"Con {_moneda(p.presupuesto)} desde {p.origen or 'tu ciudad'} no encontré opciones "
+            "ahora mismo. Prueba de nuevo más tarde o cambia el presupuesto.",
             opciones=["Cambiar presupuesto"],
         )
 
@@ -221,6 +235,15 @@ def _describir_presupuesto(p: Perfil) -> str:
 
 def _moneda(numero: int) -> str:
     return f"${numero:,.0f}".replace(",", ".")
+
+
+def _a_cop(monto: int, moneda: Optional[str]) -> int:
+    """Convierte el presupuesto del perfil a COP para el motor de vuelos."""
+    if moneda == "USD":
+        return round(monto * 4000)
+    if moneda == "EUR":
+        return round(monto * 4400)
+    return monto
 
 
 def _ahora() -> str:
