@@ -64,11 +64,20 @@ class Orquestador:
             cambio = True
 
         if not monto:
-            mil = re.search(r"(\d[\d.,]*)\s*mil", m.texto.lower())
-            if mil:
-                p.presupuesto = int(mil.group(1).replace(".", "").replace(",", "")) * 1000
+            millon = re.search(
+                r"(?:(\d[\d.,]*)\s*|un\s*|una\s*)?millon(?:es)?", m.texto.lower()
+            )
+            if millon:
+                cantidad = millon.group(1)
+                p.presupuesto = (int(cantidad.replace(".", "").replace(",", "")) if cantidad else 1) * 1_000_000
                 p.moneda = "COP"
                 cambio = True
+            else:
+                mil = re.search(r"(\d[\d.,]*)\s*mil", m.texto.lower())
+                if mil:
+                    p.presupuesto = int(mil.group(1).replace(".", "").replace(",", "")) * 1000
+                    p.moneda = "COP"
+                    cambio = True
 
         # origen marcado explícitamente ("desde Bogotá", "salgo de X")
         if _marcador_origen(m.texto):
@@ -97,6 +106,13 @@ class Orquestador:
         intent = await self.interprete.interpretar(
             t, opciones_recientes=p.opciones_recientes, presupuesto_actual=p.presupuesto
         )
+
+        # "si/ok/dale" después de "¿Busco opciones?" -> ejecuta la búsqueda
+        if _es_afirmacion(t):
+            ultima_fecha = p.opciones_recientes[0].get("fecha") if p.opciones_recientes else None
+            if p.destino:
+                return await self._respuesta_destino(p, m, p.destino, fecha=ultima_fecha)
+            return await self._respuesta_buscar(p, m, fecha=ultima_fecha)
 
         # "somos 2" siempre se aplica, incluso dentro de otra petición
         if intent.pasajeros and intent.accion not in ("pasajeros", "saludo", "ayuda", "guardar_viaje"):
@@ -274,6 +290,16 @@ def _bruto(o: OpcionVuelo) -> dict:
         "precio_cop": o.precio_cop,
         "aerolinea": o.aerolinea,
     }
+
+
+_AFIRMACIONES = {
+    "si", "sí", "ok", "okey", "dale", "sale", "bueno", "vamos", "claro",
+    "sip", "si claro", "sí claro", "afirma", "obvio", "siguiente", "prosigo",
+}
+
+
+def _es_afirmacion(t: str) -> bool:
+    return t.strip().lower() in _AFIRMACIONES
 
 
 def _marcador_origen(texto: str) -> bool:

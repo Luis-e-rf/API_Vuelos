@@ -33,15 +33,66 @@ _PRECIOS_COP = {
     "Santa Marta": 600_000,
     "San Andres": 640_000,
     "Villa de Leyva": 250_000,
-    "Leticia": 950_000,
+    "Leticia": 680_000,
     "Miami": 1_600_000,
     "Madrid": 2_900_000,
     "Quito": 1_100_000,
     "Panama": 1_300_000,
     "Cancun": 1_700_000,
+    # Caribe colombiano
+    "Riohacha": 540_000,
+    "Valledupar": 500_000,
+    "Monteria": 470_000,
+    "Sincelejo": 490_000,
+    "Providencia": 690_000,
+    # Pacifico e islas
+    "Tumaco": 720_000,
+    "Bahia Solano": 780_000,
+    "Nuqui": 800_000,
+    "Jurado": 760_000,
+    "Guapi": 700_000,
+    "Isla Gorgona": 810_000,
+    "Isla Malpelo": 850_000,
+    "Quibdo": 660_000,
+    # Amazonia y Orinoquia
+    "Mitu": 930_000,
+    "Puerto Carreno": 1_000_000,
+    "San Jose del Guaviare": 750_000,
+    "Puerto Inirida": 880_000,
+    "La Pedrera": 1_050_000,
+    "La Macarena": 760_000,
+    "Miraflores": 920_000,
+    "Florencia": 720_000,
+    "Villa Garzon": 740_000,
+    "Orocue": 960_000,
+    "San Vicente del Caguan": 700_000,
+    "Yopal": 570_000,
+    "Tame": 740_000,
+    "Arauca": 680_000,
+    "Saravena": 700_000,
+    "Puerto Asis": 860_000,
+    "Condoto": 720_000,
+    # Andes e interior
+    "Bucaramanga": 390_000,
+    "Pereira": 400_000,
+    "Armenia": 410_000,
+    "Manizales": 420_000,
+    "Cucuta": 460_000,
+    "Ibague": 430_000,
+    "Neiva": 440_000,
+    "Pasto": 580_000,
+    "Ipiales": 640_000,
+    "Popayan": 520_000,
+    "Villavicencio": 330_000,
+    "Barrancabermeja": 450_000,
+    "Apartado": 620_000,
+    "El Bagre": 650_000,
 }
 
-_AEROLINEAS_SIM = ["Avianca", "LATAM", "Wingo", "Viva Colombia", "Copa Airlines"]
+_AEROLINEAS_SIM = [
+    "Avianca", "LATAM", "Wingo", "Viva Colombia", "Copa Airlines",
+    "Satena", "EasyFly", "Clic", "Pacifico", "SEARCA",
+]
 
 
 @dataclass
@@ -112,10 +163,14 @@ class FlightClient:
         for m in range(min(meses, 5)):  # máx 5 consultas para no abusar de Google
             fechas.append(_sabado(hoy + timedelta(days=30 * m)))
         mejores: list[OpcionVuelo] = []
-        for f in fechas:
-            opciones = await self._buscar_google(origen, f, numero, destino=destino)
-            for o in opciones:
-                mejores.append(o)
+        if self.real:
+            for f in fechas:
+                opciones = await self._buscar_google(origen, f, numero, destino=destino)
+                for o in opciones:
+                    mejores.append(o)
+        else:
+            for f in fechas:
+                mejores.extend(self._simular(origen, presupuesto_cop, f, 1, destino))
         mejores.sort(key=lambda o: o.precio_cop)
         return [_por_pasajeros(o, pasajeros) for o in mejores[:numero]]
 
@@ -132,11 +187,11 @@ class FlightClient:
             return []
 
         if destino:
-            candidatos = [destino] if destino in _AEROPUERTOS else []
+            candidatos = [destino] if destino in _AEROPUERTOS and _AEROPUERTOS[destino] else []
         else:
             candidatos = [
                 c for c in _AEROPUERTOS
-                if c and c != origen and _AEROPUERTOS[c] != origen_iata
+                if c and c != origen and _AEROPUERTOS[c] and _AEROPUERTOS[c] != origen_iata
             ][:6]
         salida: list[OpcionVuelo] = []
 

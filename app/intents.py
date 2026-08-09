@@ -237,19 +237,32 @@ def _coerce_fecha(v) -> Optional[str]:
 
 
 _PASAJEROS_RE = [
-    re.compile(r"(?:somos|hay|viajan|somos solo|solo)\s+(\d+)(?:\s*(?:personas|viajeros|adultos|pasajeros))?\b"),
-    re.compile(r"(?:para|viajan)\s+(\d+)\s*(?:personas|viajeros|adultos|pasajeros)\b"),
+    re.compile(r"(?:somos|hay|viajan|somos solo|solo)\s+([a-záéíóú]+|\d+)(?:\s*(?:personas|viajeros|adultos|pasajeros))?\b"),
+    re.compile(r"(?:para|viajan)\s+([a-záéíóú]+|\d+)\s*(?:personas|viajeros|adultos|pasajeros)\b"),
 ]
+
+_NUMEROS_PALABRA = {
+    "uno": 1, "una": 1, "un": 1, "solo": 1, "sola": 1,
+    "dos": 2, "tres": 3, "cuatro": 4, "cinco": 5, "seis": 6,
+    "siete": 7, "ocho": 8, "nueve": 9, "diez": 10, "once": 11,
+    "doce": 12,
+}
 
 
 def _extraer_pasajeros(t: str) -> int | None:
     for rx in _PASAJEROS_RE:
         m = rx.search(t)
         if m:
-            n = int(m.group(1))
-            if 1 <= n <= 20:
+            n = _valor_numero(m.group(1))
+            if n and 1 <= n <= 20:
                 return n
     return None
+
+
+def _valor_numero(s: str) -> int | None:
+    if s.isdigit():
+        return int(s)
+    return _NUMEROS_PALABRA.get(s)
 
 
 _MESES = {
@@ -294,9 +307,12 @@ def _extraer_fecha(t: str) -> str | None:
 
 def _armar(anyo: int | None, mes: int, dia: int) -> str | None:
     import datetime as _dt
-    a = anyo or _dt.datetime.now().year
-    if a < _dt.datetime.now().year:
-        a = _dt.datetime.now().year
+    hoy = _dt.datetime.now().date()
+    a = anyo or hoy.year
+    if anyo is None and (mes, dia) <= (hoy.month, hoy.day):
+        a = hoy.year + 1  # "enero" sin año -> el próximo enero
+    if a < hoy.year:
+        a = hoy.year
     if a > 2031:
         a = 2031
     try:
