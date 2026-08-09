@@ -30,6 +30,7 @@ class Perfil:
     origen: Optional[str] = None
     destino: Optional[str] = None
     presupuesto: Optional[int] = None
+    moneda: Optional[str] = None
     pasaporte: Optional[bool] = None
     nombre: Optional[str] = None
     ultimo_destino_sugerido: Optional[str] = None

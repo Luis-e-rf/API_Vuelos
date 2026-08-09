@@ -47,25 +47,25 @@ class Orquestador:
 
     def _inferir_perfil(self, m: MensajeEntrada, p: Perfil) -> bool:
         """Guarda datos que el usuario 'suelta' en cualquier mensaje, sin preguntar."""
-        t = m.texto.upper()
         cambio = False
 
         monto = _extraer_monto(m.texto)
         if monto and monto != p.presupuesto:
             p.presupuesto = monto
+            p.moneda = _detectar_moneda(m.texto)
             cambio = True
 
         # "300 mil" -> 300.000 (presupuestos en pesos)
         mil = re.search(r"(\d[\d.,]*)\s*mil", m.texto.lower())
         if mil and p.presupuesto == (monto or None):
             p.presupuesto = int(mil.group(1).replace(".", "").replace(",", "")) * 1000
+            p.moneda = "COP"
             cambio = True
 
-        if any(c in t for c in ("desde bogota", "salgo de bogota", "desde bogot")):
-            p.origen = "Bogota"
-            cambio = True
-        elif any(c in t for c in ("desde medellin", "salgo de medellin")):
-            p.origen = "Medellin"
+        # origen — se infiere del mensaje si menciona una ciudad de salida
+        inferido = _inferir_origen(m.texto)
+        if inferido != "Colombia" and inferido != p.origen:
+            p.origen = inferido
             cambio = True
 
         if p.origen is None and m.ubicacion:
@@ -119,14 +119,20 @@ class Orquestador:
         if p.presupuesto is None:
             return MensajeSalida("Primero cuéntame tu presupuesto (ej: '300 dólares').")
 
+        origen = p.origen or _inferir_origen(m.texto)
         prompt = (
-            f"El usuario quiere viajar con un presupuesto de {p.presupuesto} dólares. "
-            f"Origen: {p.origen or 'no especificado (pregúntalo o asume su país por contexto)'}.\n"
-            "Sugiere 3 destinos realistas para ese presupuesto con una idea aproximada de rango de precio "
-            "y una frase cálida. Termina preguntando cuál le gusta."
+            f"El usuario quiere viajar próximamente. Origen probable: {origen} (país de habla hispana).\n"
+            f"Presupuesto: {_describir_presupuesto(p)}.\n"
+            f"Contexto que dijo el usuario: '{m.texto}'.\n"
+            "Instrucciones: NO asumas que el usuario es estadounidense ni que el dinero son dólares si "
+            "es moneda local. Sugiere 2-4 destinos REALISTAS para un fin de semana con ese presupuesto. "
+            "Si el presupuesto es bajo, prioriza destinos cortos y cercanos (para Colombia: Girardot, "
+            "Melgar, Santa Marta, Cartagena, Villa de Leyva...). Da rangos de precio en la moneda del "
+            "usuario, menciona si es un buen presupuesto para el destino y termina con una pregunta cálida."
         )
         texto, proveedor = await llm_router.generar(_SYSTEM_PERSONA, prompt)
         if texto:
+            log.info("LLM (%s) respondió búsqueda para chat %s", proveedor, m.chat_id)
             p.ultimo_destino_sugerido = "sugerido"
             await self.store.guardar(p, m.canal)
             return MensajeSalida(texto, opciones=["Buscar vuelos", "Cambiar presupuesto"])
@@ -139,11 +145,12 @@ class Orquestador:
 
     async def _respuesta_conversacion(self, m: MensajeEntrada, p: Perfil) -> MensajeSalida:
         contexto = (
-            f"Perfil: presupuesto={p.presupuesto}, origen={p.origen or 'desconocido'}. "
+            f"Perfil: presupuesto={p.presupuesto}, moneda={p.moneda}, origen={p.origen or 'desconocido'}. "
             f"Mensaje: {m.texto}"
         )
-        texto, _ = await llm_router.generar(_SYSTEM_PERSONA, contexto)
+        texto, proveedor = await llm_router.generar(_SYSTEM_PERSONA, contexto)
         if texto:
+            log.info("LLM (%s) respondió conversación para chat %s", proveedor, m.chat_id)
             return MensajeSalida(texto, opciones=["Busca para este presupuesto", "Ayuda"])
         # fallback local (sin LLM configurado)
         if p.presupuesto is not None:
@@ -170,6 +177,46 @@ def _extraer_monto(texto: str) -> Optional[int]:
         return int(m.group("cant").replace(".", "").replace(",", ""))
     except (ValueError, AttributeError):
         return None
+
+
+_CiUDADES_CO = {
+    "bogota": "Bogota",
+    "bogotá": "Bogota",
+    "medellin": "Medellin",
+    "medellín": "Medellin",
+    "cali": "Cali",
+    "barranquilla": "Barranquilla",
+    "cartagena": "Cartagena",
+}
+
+
+def _inferir_origen(texto: str) -> str:
+    """Detecta la ciudad de salida mencionada libremente en el mensaje."""
+    t = texto.lower()
+    for token, ciudad in _CiUDADES_CO.items():
+        if token in t:
+            return ciudad
+    return "Colombia"
+
+
+def _detectar_moneda(texto: str) -> str:
+    t = texto.lower()
+    if "dolar" in t or "usd" in t or "$" in t:
+        return "USD"
+    if "euro" in t:
+        return "EUR"
+    if "peso" in t or "mil" in t:
+        return "COP"
+    return "COP"
+
+
+def _describir_presupuesto(p: Perfil) -> str:
+    """Describa el presupuesto con su moneda y un equivalente en USD para el LLM."""
+    moneda = p.moneda or "COP"
+    if moneda == "COP":
+        usd = round(p.presupuesto / 4000) if p.presupuesto else 0
+        return f"{p.presupuesto:,} pesos colombianos (COP), aproximadamente ${usd} dólares"
+    return f"{p.presupuesto:,} {moneda}"
 
 
 def _moneda(numero: int) -> str:
