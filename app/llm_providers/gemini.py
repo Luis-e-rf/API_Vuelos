@@ -44,13 +44,16 @@ class Gemini(ProveedorLLM):
                 url = f"{_BASE.format(model=modelo)}?key={GEMINI_API_KEY}"
                 try:
                     r = await client.post(url, json=body)
-                    if r.status_code == 429:
+if r.status_code == 429:
                         # Cuota agotada: no tiene sentido probar más modelos; cede al fallback.
-                        log.warning("Gemini cuota agotada (%s)", modelo)
+                        log.warning("Gemini cuota agotada (%s) - se usa fallback", modelo)
+                        return None
+                    if r.status_code == 404 and "no longer available" in r.text.lower():
+                        log.warning("Gemini %s no disponible para cuentas nuevas -> fallback", modelo)
                         return None
                     if r.status_code != 200:
-                        log.warning("Gemini %s HTTP %s: %s", modelo, r.status_code, r.text[:200])
-                        # modelo inexistente o error de parámetro -> probar siguiente
+                        log.warning("Gemini %s HTTP %s: %s", modelo, r.status_code, r.text[:120])
+                        # modelo inexistente o error de parametro -> probar siguiente
                         if r.status_code in (404, 400):
                             continue
                         r.raise_for_status()
