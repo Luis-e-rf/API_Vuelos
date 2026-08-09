@@ -12,12 +12,12 @@ log = logging.getLogger(__name__)
 
 _BASE = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
-# En el free tier el nombre exacto puede variar (2.0-flash / 2.5-flash / lite).
+# En el free tier los modelos vigentes (2026) son 2.5-flash y 2.5-flash-lite.
 # Se prueban en orden hasta encontrar uno que responda.
 _MODELOS_CANDIDATOS = [
-    "gemini-2.0-flash",
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
+    "gemini-2.0-flash",
     "gemini-2.0-flash-lite",
 ]
 
