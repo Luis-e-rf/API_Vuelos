@@ -133,15 +133,16 @@ class FlightClient:
         numero: int = 3,
         destino: Optional[str] = None,
         pasajeros: int = 1,
+        aerolinea: Optional[str] = None,
     ) -> list[OpcionVuelo]:
         if self.real:
             reales = await self._buscar_google(
-                origen, fecha or fecha_default(), numero, destino=destino
+                origen, fecha or fecha_default(), numero, destino=destino, aerolinea=aerolinea
             )
             if reales:
                 return [_por_pasajeros(o, pasajeros) for o in reales]
             log.warning("Google Flights sin respuesta -> crea motor simulado")
-        opciones = self._simular(origen, presupuesto_cop, fecha, numero, destino)
+        opciones = self._simular(origen, presupuesto_cop, fecha, numero, destino, aerolinea=aerolinea)
         return [_por_pasajeros(o, pasajeros) for o in opciones]
 
     async def buscar_rango(
@@ -153,6 +154,7 @@ class FlightClient:
         destino: Optional[str] = None,
         numero: int = 3,
         pasajeros: int = 1,
+        aerolinea: Optional[str] = None,
     ) -> list[OpcionVuelo]:
         """Busca la opción más barata dentro de los próximos `meses` meses.
 
@@ -165,19 +167,24 @@ class FlightClient:
         mejores: list[OpcionVuelo] = []
         if self.real:
             for f in fechas:
-                opciones = await self._buscar_google(origen, f, numero, destino=destino)
+                opciones = await self._buscar_google(origen, f, numero, destino=destino, aerolinea=aerolinea)
                 for o in opciones:
                     mejores.append(o)
         else:
             for f in fechas:
-                mejores.extend(self._simular(origen, presupuesto_cop, f, 1, destino))
+                mejores.extend(self._simular(origen, presupuesto_cop, f, 1, destino, aerolinea=aerolinea))
         mejores.sort(key=lambda o: o.precio_cop)
+        if aerolinea:
+            matching = [o for o in mejores if _coincide_aerolinea(o.aerolinea, aerolinea)]
+            if matching:
+                mejores = matching
         return [_por_pasajeros(o, pasajeros) for o in mejores[:numero]]
 
     # --- Google Flights (vivo) ----------------------------------------------
 
     async def _buscar_google(
-        self, origen: str, fecha: str, numero: int, destino: Optional[str] = None
+        self, origen: str, fecha: str, numero: int, destino: Optional[str] = None,
+        aerolinea: Optional[str] = None,
     ) -> list[OpcionVuelo]:
         """Pide precios reales a Google Flights por origen->varios destinos
         (o solo el destino pedido)."""
@@ -238,13 +245,17 @@ class FlightClient:
 
         await asyncio.gather(*[_uno(d) for d in destinos])
         salida.sort(key=lambda o: o.precio_cop)
+        if aerolinea:
+            matching = [o for o in salida if _coincide_aerolinea(o.aerolinea, aerolinea)]
+            if matching:
+                salida = matching
         return salida[:numero]
 
     # --- Simulador de emergencia -------------------------------------------
 
     def _simular(
         self, origen: str, presupuesto_cop: int, fecha: Optional[str], numero: int,
-        destino: Optional[str] = None,
+        destino: Optional[str] = None, aerolinea: Optional[str] = None,
     ) -> list[OpcionVuelo]:
         """Opciones realistas dentro del presupuesto (solo offline/degradado)."""
         origen = origen or "Bogota"
@@ -266,7 +277,7 @@ class FlightClient:
                     destino=d,
                     fecha=_proxima_fecha(fecha, i),
                     precio_cop=precio,
-                    aerolinea=rnd.choice(_AEROLINEAS_SIM),
+                    aerolinea=aerolinea or rnd.choice(_AEROLINEAS_SIM),
                     duracion=rnd.choice(["1h 20m", "1h 50m", "2h 05m", "1h 40m"]),
                     origen=origen,
                 )
@@ -298,6 +309,13 @@ def _proxima_fecha(base: str, offset: int) -> str:
     return (
         datetime.strptime(base, "%Y-%m-%d") + timedelta(days=offset)
     ).strftime("%Y-%m-%d")
+
+
+def _coincide_aerolinea(real: str, pedida: Optional[str]) -> bool:
+    """'Avianca' == 'avianca' o 'LATAM Airlines' == 'latam'."""
+    if not pedida:
+        return True
+    return pedida.lower() in real.lower() or real.lower() in pedida.lower()
 
 
 def _duracion_de(mejor) -> str:

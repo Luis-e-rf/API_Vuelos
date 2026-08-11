@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass
 from typing import Optional
 
 from app import llm_router
-from app.destinos import normalizar_destino, quitar_origen
+from app.destinos import destinos_en_texto, normalizar_destino, quitar_origen
 
 log = logging.getLogger(__name__)
 
@@ -36,6 +36,7 @@ class Intencion:
     pasajeros: Optional[int] = None         # cuántos viajan
     rango_meses: Optional[int] = None       # "en los próximos N meses"
     fecha: Optional[str] = None             # fecha ISO detectada ("principios de enero 2027")
+    aerolinea: Optional[str] = None         # si pidió una aerolínea concreta ("con wingo")
     barato: bool = False                    # "más barata/económica"
     rapido: bool = False                    # "más rápida"
     opciones_recientes: int = 0             # cuántas opciones existen en el perfil
@@ -63,13 +64,14 @@ Posibles "accion":
 - "saludo" / "ayuda" / "conversacion"
 
 Formato JSON a devolver (usa valores null si no aplican):
-{"accion": "...", "numero": 3, "destino": "Barranquilla", "presupuesto": 600000, "pasajeros": 2, "rango_meses": 3, "fecha": "2027-01-05", "barato": true, "rapido": false}
+{"accion": "...", "numero": 3, "destino": "Barranquilla", "presupuesto": 600000, "pasajeros": 2, "rango_meses": 3, "fecha": "2027-01-05", "aerolinea": "Wingo", "barato": true, "rapido": false}
 
 Reglas:
 - numero: índice 1-based de la opción a la que se refiere, solo si accion=elegir_opcion.
 - destino: normaliza la ciudad aunque esté mal escrita ("barajilla" -> "Barranquilla").
 - pasajeros: cuántas personas viajan aunque esté en medio de otra frase ("para 4 personas" -> 4).
-- fecha: si el usuario menciona un mes/periodo ("a principios de enero de 2027") usa ISO: principios -> día 05, mediados -> 15, fines -> 25; "enero 2027" -> 2027-01-15.
+- fecha: si el usuario menciona un mes/periodo ("a principios de enero de 2027") usa ISO: principios -> día 05, mediados -> 15, fines -> 25; "enero 2027" -> 2027-01-15; "finales de año" -> 2026-12-25.
+- aerolinea: nombre de la aerolínea si la pide ("con wingo" -> "Wingo", "por avianca" -> "Avianca").
 - barato: true si pide "la más barata/económica/regalada".
 - rapido: true si pide "la más rápida/corta/directa".
 
@@ -129,6 +131,7 @@ class Interpretador:
             pasajeros=_coerce_int(raw.get("pasajeros")),
             rango_meses=_coerce_int(raw.get("rango_meses")),
             fecha=_coerce_fecha(raw.get("fecha")),
+            aerolinea=_coerce_aerolinea(raw.get("aerolinea")),
             barato=bool(raw.get("barato")),
             rapido=bool(raw.get("rapido")),
         )
@@ -165,8 +168,11 @@ class Interpretador:
         num_opcion = _extraer_opcion(t, len(recientes))
         barato = any(w in t for w in ("barat", "econ", "regala", "poco"))
         rapido = any(w in t for w in ("rapid", "direct", "corto"))
+        aerolinea = _extraer_aerolinea(t)
         sin_origen = quitar_origen(texto)
-        destino = normalizar_destino(sin_origen)
+        destino = _destino_con_negacion(sin_origen)
+        if not destino:
+            destino = normalizar_destino(sin_origen)
         huella = _huele_busqueda(t) or destino or fecha or rango
 
         # ---- decidir la acción central ----
@@ -174,19 +180,20 @@ class Interpretador:
             # "lo más barato en 3 meses" -> rango, portando destino si lo dió
             return Intencion(
                 accion="rango", rango_meses=rango, destino=destino,
-                pasajeros=pasajeros, barato=barato,
+                pasajeros=pasajeros, barato=barato, aerolinea=aerolinea,
             )
         if destino or huella:
             if destino:
                 return Intencion(
                     accion="elegir_destino", destino=destino, fecha=fecha,
-                    pasajeros=pasajeros, barato=barato,
+                    pasajeros=pasajeros, barato=barato, aerolinea=aerolinea,
                 )
             if fecha:
                 return Intencion(
                     accion="buscar", fecha=fecha, pasajeros=pasajeros, barato=barato,
+                    aerolinea=aerolinea,
                 )
-            return Intencion(accion="buscar", pasajeros=pasajeros, barato=barato)
+            return Intencion(accion="buscar", pasajeros=pasajeros, barato=barato, aerolinea=aerolinea)
 
         if num_opcion:
             return Intencion(accion="elegir_opcion", numero=num_opcion)
@@ -234,6 +241,46 @@ def _coerce_fecha(v) -> Optional[str]:
         return v
     except (ValueError, TypeError):
         return None
+
+
+_AEROLINEAS_CANON = {
+    "avianca": "Avianca",
+    "latam": "LATAM",
+    "wingo": "Wingo",
+    "viva": "Viva Colombia",
+    "cop": "Copa Airlines",
+    "satena": "Satena",
+    "easyfly": "EasyFly",
+    "easy fly": "EasyFly",
+    "clic": "Clic",
+    "pacifico": "Pacifico",
+}
+
+
+def _coerce_aerolinea(v) -> Optional[str]:
+    if not isinstance(v, str):
+        return None
+    v = v.strip().lower()
+    for clave, canon in _AEROLINEAS_CANON.items():
+        if clave in v:
+            return canon
+    return None
+
+
+_AEROLINEAS_RE = re.compile(
+    r"(?:con|por|en|que uses|usando|vuelo con|volar)\s*([a-záéíóúñ\s]+?)(?:\b|$)",
+    re.I,
+)
+
+
+def _extraer_aerolinea(t: str) -> Optional[str]:
+    """Detecta si el usuario pide una aerolínea concreta ("con wingo")."""
+    for m in _AEROLINEAS_RE.finditer(t):
+        candidata = m.group(1).strip().lower()
+        for clave, canon in _AEROLINEAS_CANON.items():
+            if clave in candidata:
+                return canon
+    return None
 
 
 _PASAJEROS_RE = [
@@ -296,6 +343,15 @@ def _extraer_fecha(t: str) -> str | None:
         dia = min(28, int(m.group(1)))
         return _armar(anyo, _MESES[m.group(2)], dia)
 
+    # "finales de año" / "fin de año" -> diciembre
+    if any(w in t for w in ("de año", "del año", "de anio", "del anio")):
+        if periodo and periodo == 25:
+            return _armar(anyo, 12, 25)
+        if any(w in t for w in ("principio", "inicio", "comienzo")):
+            return _armar(anyo, 1, 5)
+        if any(w in t for w in ("mediad", "mitad")):
+            return _armar(anyo, 6, 15)
+
     # mes + (año)
     for nombre, n in _MESES.items():
         if nombre in t or (len(nombre) > 4 and nombre[:4] in t):
@@ -331,6 +387,33 @@ def _extraer_opcion(t: str, n_recientes: int) -> int | None:
         n = int(m.group(1))
         return n if n <= n_recientes else None
     return None
+
+
+_NEGACION_MARCADORES = ("no ", "ya no", "no quiero", "mejor no", "si no", "sino", "en vez de", "en lugar de", "cambiando", "cambio de")
+
+
+def _destino_con_negacion(texto: str) -> str | None:
+    """Si el usuario descarta un destino y propone otro, usa el último
+    ("mejor ya no gorgona si no que quiero buscar para medellin" -> Medellin)."""
+    t = texto.lower()
+    destinos = destinos_en_texto(texto)
+    if not destinos:
+        return None
+    # no hay corrección -> el primero mencionado
+    if not any(m in t for m in _NEGACION_MARCADORES):
+        return destinos[0]
+    # hay corrección -> tomar el destino que aparece después del 'no',
+    # o el último mencionado si no está claro
+    pos_no = -1
+    for m in _NEGACION_MARCADORES:
+        idx = t.find(m)
+        if idx >= 0:
+            pos_no = max(pos_no, idx)
+    for destino in reversed(destinos):
+        idx = t.find(destino.lower())
+        if idx > pos_no:
+            return destino
+    return destinos[-1]
 
 
 def _huele_busqueda(t: str) -> bool:

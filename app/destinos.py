@@ -243,3 +243,24 @@ def quitar_origen(texto: str) -> str:
                 t = t.replace(pat, " ", 1)
                 break
     return t.strip()
+
+
+def destinos_en_texto(texto: str) -> list[str]:
+    """Devuelve los destinos mencionados en orden de aparición, sin duplicar.
+    Útil para manejar correcciones ("mejor ya no gorgona si no medellin")."""
+    t = texto.lower()
+    encontrados: list[tuple[int, str]] = []
+    for alias, canon in _ALIASES.items():
+        pos = 0
+        while True:
+            idx = t.find(alias, pos)
+            if idx < 0:
+                break
+            encontrados.append((idx, canon))
+            pos = idx + 1
+    # dedupe por canon, conservando la primera posición de cada uno
+    vistos: dict[str, int] = {}
+    for idx, canon in encontrados:
+        if canon not in vistos or idx < vistos[canon]:
+            vistos[canon] = idx
+    return [c for c, _ in sorted(vistos.items(), key=lambda kv: kv[1])]

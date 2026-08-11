@@ -40,6 +40,8 @@ class Perfil:
     opciones_recientes: list[dict] = field(default_factory=list)
     # Número de pasajeros (p. ej. "somos 2")
     pasajeros: int = 1
+    # Aerolínea preferida si el usuario la pidió ("con wingo")
+    aerolinea: Optional[str] = None
     viajes_guardados: list[dict] = field(default_factory=list)
     timestamps: list[str] = field(default_factory=list)
 

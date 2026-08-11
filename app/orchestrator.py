@@ -172,31 +172,37 @@ class Orquestador:
             return await self._respuesta_opcion(p, m, intent.numero)
 
         if intent.accion == "elegir_destino" and intent.destino:
-            return await self._respuesta_destino(p, m, intent.destino, fecha=intent.fecha)
+            return await self._respuesta_destino(p, m, intent.destino, fecha=intent.fecha, aerolinea=intent.aerolinea)
 
         if intent.accion == "rango" and intent.rango_meses:
-            return await self._respuesta_rango(p, m, intent.rango_meses)
+            return await self._respuesta_rango(p, m, intent.rango_meses, aerolinea=intent.aerolinea)
 
         if intent.accion == "buscar":
             if intent.destino:
-                return await self._respuesta_destino(p, m, intent.destino, fecha=intent.fecha)
-            return await self._respuesta_buscar(p, m, fecha=intent.fecha)
+                return await self._respuesta_destino(p, m, intent.destino, fecha=intent.fecha, aerolinea=intent.aerolinea)
+            return await self._respuesta_buscar(p, m, fecha=intent.fecha, aerolinea=intent.aerolinea)
 
         return await self._respuesta_conversacion(m, p)
 
     # --- respuestas concretas -------------------------------------------
 
     async def _respuesta_buscar(
-        self, p: Perfil, m: MensajeEntrada, fecha: Optional[str] = None
+        self, p: Perfil, m: MensajeEntrada, fecha: Optional[str] = None,
+        aerolinea: Optional[str] = None,
     ) -> MensajeSalida:
         if p.presupuesto is None:
             return MensajeSalida("Primero cuéntame tu presupuesto (ej: '300 dólares').")
         origen = p.origen or "Bogota"
         cop = _a_cop(p.presupuesto, p.moneda)
         opciones = await self.flight.buscar(
-            origen, cop, p.moneda, fecha=fecha, pasajeros=p.pasajeros
+            origen, cop, p.moneda, fecha=fecha, pasajeros=p.pasajeros, aerolinea=aerolinea
         )
         if not opciones:
+            if aerolinea:
+                return MensajeSalida(
+                    f"No encontré vuelos de *{aerolinea}* en esas fechas. "
+                    "Dime si quieres probar otra aerolínea o dejar que busque todas."
+                )
             return MensajeSalida(
                 "En esas fechas no encontré opciones. Dime cuánto presupuesto "
                 "manejas o prueba con 'desde Bogotá' para refrescar."
@@ -204,10 +210,13 @@ class Orquestador:
         titulo = "Aquí tienes opciones que se ajustan a tu presupuesto:"
         if fecha:
             titulo = f"Aquí tienes opciones para el *{_fecha_legible(fecha)}*:"
-        return await self._mostrar(p, m, opciones, cop, titulo)
+        if aerolinea:
+            titulo = f"Solo te muestro vuelos de *{aerolinea}*. Aquí van:"
+        return await self._mostrar(p, m, opciones, cop, titulo, aerolinea=aerolinea)
 
     async def _respuesta_destino(
-        self, p: Perfil, m: MensajeEntrada, ciudad: str, fecha: Optional[str] = None
+        self, p: Perfil, m: MensajeEntrada, ciudad: str, fecha: Optional[str] = None,
+        aerolinea: Optional[str] = None,
     ) -> MensajeSalida:
         if p.presupuesto is None:
             return MensajeSalida("Primero cuéntame tu presupuesto (ej. '300 dólares').")
@@ -216,16 +225,25 @@ class Orquestador:
         p.destino = ciudad
         await self.store.guardar(p, m.canal)
         opciones = await self.flight.buscar(
-            origen, conduz, p.moneda, fecha=fecha, destino=ciudad, pasajeros=p.pasajeros
+            origen, conduz, p.moneda, fecha=fecha, destino=ciudad, pasajeros=p.pasajeros,
+            aerolinea=aerolinea,
         )
         if not opciones:
+            if aerolinea:
+                return MensajeSalida(
+                    f"No hay vuelos de *{aerolinea}* a *{ciudad}* ahora. "
+                    "¿Pruebo con otra aerolínea o busco todas?",
+                    opciones=["Busca todas", "Cambiar presupuesto"],
+                )
             return MensajeSalida(
                 f"Para ir a *{ciudad}* con {_moneda(p.presupuesto)} no encontré opciones baratas ahora. "
                 "¿Probamos otra ciudad o ajustamos el presupuesto?",
                 opciones=["Cambiar presupuesto", "Busca para este presupuesto"],
             )
         extra = f" para el *{_fecha_legible(fecha)}*" if fecha else ""
-        return await self._mostrar(p, m, opciones, conduz, f"¡Excelente elección! Vuelos a *{ciudad}* {extra}✈️")
+        if aerolinea:
+            extra += f" en *{aerolinea}*"
+        return await self._mostrar(p, m, opciones, conduz, f"¡Excelente elección! Vuelos a *{ciudad}* {extra}✈️", aerolinea=aerolinea)
 
     async def _respuesta_opcion(self, p: Perfil, m: MensajeEntrada, numero: int) -> MensajeSalida:
         recientes = p.opciones_recientes
@@ -237,17 +255,20 @@ class Orquestador:
         fecha_guardada = recientes[numero - 1].get("fecha")
         return await self._respuesta_destino(p, m, destino, fecha=fecha_guardada)
 
-    async def _respuesta_rango(self, p: Perfil, m: MensajeEntrada, meses: int) -> MensajeSalida:
+    async def _respuesta_rango(
+        self, p: Perfil, m: MensajeEntrada, meses: int,
+        aerolinea: Optional[str] = None,
+    ) -> MensajeSalida:
         if p.presupuesto is None:
             return MensajeSalida("Primero cuéntame tu presupuesto.")
         origen = p.origen or "Bogota"
         conduz = _a_cop(p.presupuesto, p.moneda)
         opciones = await self.flight.buscar_rango(
-            origen, conduz, meses, destino=p.destino, pasajeros=p.pasajeros
+            origen, conduz, meses, destino=p.destino, pasajeros=p.pasajeros, aerolinea=aerolinea
         )
         if not opciones:
             return MensajeSalida(f"Por ahora no encontré vuelos en los próximos {meses} meses. Intenta otro rango.")
-        return await self._mostrar(p, m, opciones, conduz, f"Lo más económico en los próximos {meses} meses:")
+        return await self._mostrar(p, m, opciones, conduz, f"Lo más económico en los próximos {meses} meses:", aerolinea=aerolinea)
 
     async def _respuesta_conversacion(self, m: MensajeEntrada, p: Perfil) -> MensajeSalida:
         contexto = (
@@ -270,10 +291,13 @@ class Orquestador:
     # --- cómo mostrar opciones -----------------------------------------
 
     async def _mostrar(
-        self, p: Perfil, m: MensajeEntrada, opciones: list[OpcionVuelo], cop: int, titulo: str
+        self, p: Perfil, m: MensajeEntrada, opciones: list[OpcionVuelo], cop: int, titulo: str,
+        aerolinea: Optional[str] = None,
     ) -> MensajeSalida:
         p.opciones_recientes = [_bruto(o) for o in opciones]
         p.ultimo_destino_sugerido = opciones[0].destino if opciones else None
+        if aerolinea:
+            p.aerolinea = aerolinea
         await self.store.guardar(p, m.canal)
         texto = f"{titulo}\n\n{formatear_opciones(opciones, cop, pasajeros=p.pasajeros or 1)}"
         foto = await foto_destino(opciones[0].destino) if opciones else None
