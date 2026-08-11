@@ -24,6 +24,8 @@ TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 WA_TOKEN = os.environ.get("WHATSAPP_TOKEN", "")
 WA_PHONE_NUMBER_ID = os.environ.get("WHATSAPP_PHONE_NUMBER_ID", "")
 WA_BUSINESS_PHONE = os.environ.get("WHATSAPP_BUSINESS_PHONE", "")
+# Token para la verificación del webhook que hace Meta con el GET inicial.
+WA_VERIFY_TOKEN = os.environ.get("WHATSAPP_VERIFY_TOKEN", "vuelos-demo-2026")
 WA_GRAPH_URL = os.environ.get("WHATSAPP_GRAPH_URL", "https://graph.facebook.com/v20.0")
 
 # Upstash Redis (perfil por chat_id)

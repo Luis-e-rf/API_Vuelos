@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Request
+from fastapi.responses import PlainTextResponse
 
 from app import config
 from app.adapters.telegram import TelegramAdapter
@@ -25,6 +26,7 @@ async def diagnostico():
     """Dice qué credenciales llegaron a la app (sin exponer sus valores)."""
     return {
         "telegram": bool(config.TELEGRAM_BOT_TOKEN),
+        "whatsapp": bool(config.WA_TOKEN and config.WA_PHONE_NUMBER_ID),
         "gemini": bool(config.GEMINI_API_KEY),
         "groq": bool(config.GROQ_API_KEY),
         "deepseek": bool(config.DEEPSEEK_API_KEY),
@@ -42,9 +44,27 @@ async def webhook_telegram(request: Request):
     return {"ok": True}
 
 
+@app.get("/webhook/whatsapp")
+async def verificar_whatsapp(request: Request):
+    """Meta llama este GET para verificar que el webhook es nuestro.
+
+    Meta envía query params con punto: hub.mode, hub.verify_token, hub.challenge.
+    Se leen crudos con request.query_params y respondemos el challenge en texto plano.
+    """
+    q = request.query_params
+    respuesta = _whatsapp.verificar(
+        q.get("hub.mode", ""),
+        q.get("hub.verify_token", ""),
+        q.get("hub.challenge", ""),
+    )
+    if respuesta:
+        return PlainTextResponse(respuesta)
+    return PlainTextResponse("Verificación fallida", status_code=403)
+
+
 @app.post("/webhook/whatsapp")
 async def webhook_whatsapp(request: Request):
-    """WhatsApp Cloud API enruta aquí sus mensajes (cuando se active el canal)."""
+    """WhatsApp Cloud API enruta aquí sus mensajes."""
     update = await request.json()
     entrada = _whatsapp.parse(update)
     if entrada:

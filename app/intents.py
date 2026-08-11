@@ -21,6 +21,7 @@ ACCIONES = (
     "guardar_viaje",
     "ver_guardados",
     "pasajeros",         # "somos 2"
+    "comprar",           # "lo quiero", "dame el link para comprarlo"
     "saludo",
     "ayuda",
     "conversacion",
@@ -61,6 +62,7 @@ Posibles "accion":
 - "cambiar_presupuesto" -> quiere cambiar el presupuesto
 - "guardar_viaje" / "ver_guardados" -> guardar o ver vuelos guardados
 - "pasajeros" -> dice cuántas personas viajan ("somos 2")
+- "comprar" -> quiere comprar/reservar el vuelo que se le mostró ("lo quiero", "dame el link", "quiero comprar este vuelo")
 - "saludo" / "ayuda" / "conversacion"
 
 Formato JSON a devolver (usa valores null si no aplican):
@@ -160,6 +162,8 @@ class Interpretador:
             return Intencion(accion="guardar_viaje")
         if "cambiar" in t:
             return Intencion(accion="cambiar_presupuesto")
+        if _quiere_comprar(t):
+            return Intencion(accion="comprar")
 
         # ---- recoger TODOS los campos que aparezcan ----
         pasajeros = _extraer_pasajeros(t)
@@ -414,6 +418,18 @@ def _destino_con_negacion(texto: str) -> str | None:
         if idx > pos_no:
             return destino
     return destinos[-1]
+
+
+def _quiere_comprar(t: str) -> bool:
+    """'lo quiero', 'comprar', 'reservar', 'dame el link' -> comprar."""
+    return any(
+        w in t for w in (
+            "lo quiero", "quiero comprar", "comprar este", "compralo", "cómpramelo",
+            "reservar", "dame el link", "dame el enlace", "link de compra",
+            "quiero el vuelo", "como compro", "cómo compro", "comprar el vuelo",
+            "adquirir", "comprar",
+        )
+    ) and not any(w in t for w in ("busca", "busco", "barato", "destino", "vuelo a"))
 
 
 def _huele_busqueda(t: str) -> bool:

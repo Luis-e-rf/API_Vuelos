@@ -11,6 +11,7 @@ from app.flight_client import FlightClient, OpcionVuelo
 from app.formatter import formatear_opciones
 from app.fotos import foto_destino
 from app.intents import Interpretador
+from app.links import link_google_flights
 from app.models import MensajeEntrada, MensajeSalida, Perfil
 from app.profile_store import ProfileStore
 
@@ -168,6 +169,9 @@ class Orquestador:
             )
             return MensajeSalida(lineas)
 
+        if intent.accion == "comprar":
+            return await self._respuesta_comprar(p, m)
+
         if intent.accion == "elegir_opcion" and intent.numero:
             return await self._respuesta_opcion(p, m, intent.numero)
 
@@ -254,6 +258,32 @@ class Orquestador:
             return MensajeSalida("Ups, no tengo los datos de esa opción. Dime 'busca' para refrescar.")
         fecha_guardada = recientes[numero - 1].get("fecha")
         return await self._respuesta_destino(p, m, destino, fecha=fecha_guardada)
+
+    async def _respuesta_comprar(self, p: Perfil, m: MensajeEntrada) -> MensajeSalida:
+        """'lo quiero' -> link de Google Flights para el vuelo que se mostró."""
+        if not p.opciones_recientes:
+            return MensajeSalida(
+                "Aún no te he mostrado ningún vuelo. Pídeme que busque opciones "
+                "(ej. 'busca a cartagena') y luego me dices 'lo quiero'."
+            )
+        mejor = p.opciones_recientes[0]
+        destino = mejor.get("destino")
+        fecha = mejor.get("fecha")
+        origen = p.origen or "Bogota"
+        link = link_google_flights(origen, destino, fecha)
+        if not link:
+            return MensajeSalida(
+                f"Para *{destino}* no tengo un enlace de compra aún, pero puedes buscar "
+                "en Google Flights por 'Bogota → {destino}'. ¿Buscamos otra cosa?"
+            )
+        return MensajeSalida(
+            f"¡Claro! ✈️ Este es el vuelo a *{destino}* que te mostré:\n\n"
+            f"📅 {_fecha_legible(fecha) if fecha else ''}\n"
+            f"💰 {_moneda(mejor.get('precio_cop', 0))} COP\n\n"
+            f"🔗 {link}\n\n"
+            "Ahí eliges aerolínea, horario y pagas directo en Google Flights. 😉",
+            opciones=["Busca más opciones", "Cambiar presupuesto"],
+        )
 
     async def _respuesta_rango(
         self, p: Perfil, m: MensajeEntrada, meses: int,
