@@ -1,11 +1,16 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse
 
+import logging
+
 from app import config
 from app.adapters.telegram import TelegramAdapter
 from app.adapters.whatsapp import WhatsAppAdapter
 from app.orchestrator import Orquestador
 from app.profile_store import ProfileStore
+
+log = logging.getLogger("webhook")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 
 app = FastAPI(title="API Vuelos - Bot multiplataforma")
 
@@ -65,8 +70,11 @@ async def verificar_whatsapp(request: Request):
 @app.post("/webhook/whatsapp")
 async def webhook_whatsapp(request: Request):
     """WhatsApp Cloud API enruta aquí sus mensajes."""
+    raw = await request.body()
+    log.info("WA webhook POST recibido: %s", raw[:500])
     update = await request.json()
     entrada = _whatsapp.parse(update)
+    log.info("WA parse -> %s", entrada)
     if entrada:
         await _orquestador.procesar(entrada, _whatsapp)
     return {"ok": True, "whatsapp": True}
