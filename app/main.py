@@ -9,8 +9,8 @@ from app.adapters.whatsapp import WhatsAppAdapter
 from app.orchestrator import Orquestador
 from app.profile_store import ProfileStore
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s", force=True)
 log = logging.getLogger("webhook")
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 
 app = FastAPI(title="API Vuelos - Bot multiplataforma")
 
