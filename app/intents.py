@@ -22,6 +22,8 @@ ACCIONES = (
     "ver_guardados",
     "pasajeros",         # "somos 2"
     "comprar",           # "lo quiero", "dame el link para comprarlo"
+    "actualizar_perfil", # "no, mejor a Cartagena" (cambio de parecer)
+    "olvidar_todo",      # "olvida todo", "empezar de cero"
     "saludo",
     "ayuda",
     "conversacion",
@@ -30,6 +32,13 @@ ACCIONES = (
 
 @dataclass
 class Intencion:
+    """Una intención extraída del mensaje del usuario.
+
+    Soporta:
+      - Acción principal (buscar, elegir_destino, etc.)
+      - Múltiples intenciones (el LLM retorna una lista)
+      - Cambio de parecer (actualizar_perfil con campo_actualizado)
+    """
     accion: str = "conversacion"
     numero: Optional[int] = None              # si eligió una opción por posición
     destino: Optional[str] = None           # ciudad normalizada (canónica)
@@ -41,57 +50,100 @@ class Intencion:
     barato: bool = False                    # "más barata/económica"
     rapido: bool = False                    # "más rápida"
     opciones_recientes: int = 0             # cuántas opciones existen en el perfil
+    campo_actualizado: Optional[str] = None # para actualizar_perfil: "destino", "presupuesto", etc.
+    moneda: Optional[str] = None            # USD, COP, EUR
 
     def to_dict(self) -> dict:
         return asdict(self)
 
 
 _SYSTEM_INTENT = (
-    "Eres el intérprete interno de un bot de vuelos en español. Tu única tarea es "
-    "traducir el mensaje libre del usuario a un objeto JSON. No escribas nada más "
-    "que el JSON."
+    "Eres el intérprete interno de un bot de vuelos en español. "
+    "Tu única tarea es analizar el mensaje del usuario considerando el historial "
+    "y el perfil actual, y devolver un JSON con la(s) intención(es). "
+    "No escribas nada más que el JSON."
 )
 
-_PROMPT_INTENT = """Convierte el mensaje del usuario en un objeto JSON.
+_PROMPT_INTENT = """Analiza el mensaje del usuario considerando el contexto de conversación.
 
-Posibles "accion":
-- "buscar" -> quiere ver opciones de vuelos ("busca", "qué hay barato")
-- "elegir_opcion" -> eligió una de las opciones numeradas que se le mostraron (ej: "la 3", "la opción 2")
-- "elegir_destino" -> menciona un destino concreto ("quiero ir a cartagena")
-- "rango" -> búsqueda dentro de un rango de meses, posiblemente la más barata ("lo más barato en 3 meses")
-- "cambiar_presupuesto" -> quiere cambiar el presupuesto
-- "guardar_viaje" / "ver_guardados" -> guardar o ver vuelos guardados
-- "pasajeros" -> dice cuántas personas viajan ("somos 2")
-- "comprar" -> quiere comprar/reservar el vuelo que se le mostró ("lo quiero", "dame el link", "quiero comprar este vuelo")
-- "saludo" / "ayuda" / "conversacion"
+PERFIL ACTUAL DEL USUARIO:
+- Presupuesto: {presupuesto} {moneda}
+- Origen: {origen}
+- Destino guardado: {destino}
+- Pasajeros: {pasajeros}
+- Último destino sugerido: {ultimo_destino}
 
-Formato JSON a devolver (usa valores null si no aplican):
-{"accion": "...", "numero": 3, "destino": "Barranquilla", "presupuesto": 600000, "pasajeros": 2, "rango_meses": 3, "fecha": "2027-01-05", "aerolinea": "Wingo", "barato": true, "rapido": false}
+HISTORIAL RECIENTE (últimos turnos):
+{historial}
 
-Reglas:
-- numero: índice 1-based de la opción a la que se refiere, solo si accion=elegir_opcion.
-- destino: normaliza la ciudad aunque esté mal escrita ("barajilla" -> "Barranquilla").
-- pasajeros: cuántas personas viajan aunque esté en medio de otra frase ("para 4 personas" -> 4).
-- fecha: si el usuario menciona un mes/periodo ("a principios de enero de 2027") usa ISO: principios -> día 05, mediados -> 15, fines -> 25; "enero 2027" -> 2027-01-15; "finales de año" -> 2026-12-25.
-- aerolinea: nombre de la aerolínea si la pide ("con wingo" -> "Wingo", "por avianca" -> "Avianca").
-- barato: true si pide "la más barata/económica/regalada".
-- rapido: true si pide "la más rápida/corta/directa".
+OPCIONES MOSTRADAS ANTERIORMENTE:
+{recientes}
 
-Mensaje del usuario: "{mensaje}"
-Opciones mostradas: {recientes}
+MENSAJE ACTUAL DEL USUARIO: "{mensaje}"
+
+REGLAS IMPORTANTES:
+
+1. CAMBIO DE PARECER: Si el usuario dice "no, mejor...", "cambié de opinión", "olvida eso", 
+   "en vez de", "no quiero X, quiero Y", usa accion "actualizar_perfil" y campo_actualizado 
+   indica qué cambió ("destino", "presupuesto", "fecha", "pasajeros").
+
+2. MÚLTIPLES INTENCIONES: Si el usuario menciona 2 destinos o búsquedas diferentes 
+   ("busca a Cartagena y también a San Andrés"), retorna un array "intents" con hasta 2 elementos.
+   Si menciona 3+, retorna solo las 2 principales y un mensaje_clarificacion.
+
+3. MODO SESIÓN: Si el historial está vacío y el usuario dice "hola", retorna accion "saludo".
+   Si el usuario referencia algo anterior ("¿y ese vuelo?", "el mismo", "sigue buscando"), 
+   usa el perfil guardado como contexto.
+
+4. CONTEXTO: Si el usuario dice "para 2 personas" sin mencionar destino, asume que se refiere 
+   al destino guardado. Si dice "más barato", asume que se refiere al último destino buscado.
+
+5. PRESUPUESTO: Si el usuario dice "1 millón", "un millón", "1.000.000" → 1000000 COP.
+   Si dice "300 dólares" → 300 USD. Si dice "600 mil" → 600000 COP.
+   Si NO menciona presupuesto, usa null (no inventes).
+
+6. FECHA: "2027" → "2027-01-15". "próximo mes" → fecha ISO del próximo mes.
+   "lo más barato en 3 meses" → rango_meses: 3.
+
+RESPUESTA JSON (usa "intents" como array):
+{{
+  "intents": [
+    {{
+      "accion": "buscar|elegir_opcion|elegir_destino|rango|cambiar_presupuesto|guardar_viaje|ver_guardados|pasajeros|comprar|actualizar_perfil|olvidar_todo|saludo|ayuda|conversacion",
+      "destino": "Ciudad Normalizada",
+      "presupuesto": 1000000,
+      "moneda": "COP",
+      "pasajeros": 2,
+      "fecha": "2027-01-15",
+      "rango_meses": 3,
+      "aerolinea": "Wingo",
+      "barato": true,
+      "rapido": false,
+      "campo_actualizado": "destino|presupuesto|fecha|pasajeros|null",
+      "numero": 1
+    }}
+  ],
+  "mensaje_clarificacion": null
+}}
+
+Si solo hay 1 intención, "intents" tiene 1 elemento.
+Si hay 2 búsquedas diferentes, "intents" tiene 2 elementos.
+Si hay 3+, usa "mensaje_clarificacion" para pedir aclaración.
 """
 
-_ORDINALES = {
-    "primera": 1, "primero": 1, "1ra": 1, "1ª": 1,
-    "segunda": 2, "segundo": 2, "2da": 2, "2ª": 2,
-    "tercera": 3, "tercero": 3, "3ra": 3, "3ª": 3,
-    "cuarta": 4, "4ta": 4, "quinta": 5, "5ta": 5,
-}
+
+@dataclass
+class ResultadoInterpretacion:
+    """Resultado del intérprete: puede retornar múltiples intenciones."""
+    intenciones: list[Intencion]
+    mensaje_clarificacion: Optional[str] = None
+
 
 class Interpretador:
-    """Traduce el texto libre a un Intencion estructurado.
+    """Traduce el texto libre a una o más Intenciones estructuradas.
 
     Prioridad: LLM (robusto) -> heurística local (offline).
+    Soporta múltiples intenciones por mensaje y detección de cambio de parecer.
     """
 
     async def interpretar(
@@ -100,118 +152,175 @@ class Interpretador:
         opciones_recientes: list[dict] | None = None,
         presupuesto_actual: Optional[int] = None,
         historial: Optional[list[dict]] = None,
-    ) -> Intencion:
+        perfil_actual: Optional[dict] = None,
+    ) -> ResultadoInterpretacion:
         recientes = opciones_recientes or []
         texto = mensaje.strip()
+
+        # Datos del perfil para el prompt
+        p = perfil_actual or {}
+        presupuesto_str = f"{p.get('presupuesto', 'null')} {p.get('moneda', '')}" if p.get('presupuesto') else "no definido"
+        historial_str = _formatear_historial(historial) if historial else "(nueva conversación)"
 
         # -------- LLM
         try:
             prompt = _PROMPT_INTENT
             prompt = prompt.replace("{mensaje}", texto)
             prompt = prompt.replace("{recientes}", json.dumps(recientes))
+            prompt = prompt.replace("{presupuesto}", presupuesto_str)
+            prompt = prompt.replace("{moneda}", p.get('moneda', '') or '')
+            prompt = prompt.replace("{origen}", p.get('origen', 'desconocido') or 'desconocido')
+            prompt = prompt.replace("{destino}", p.get('destino', 'ninguno') or 'ninguno')
+            prompt = prompt.replace("{pasajeros}", str(p.get('pasajeros', 1)))
+            prompt = prompt.replace("{ultimo_destino}", p.get('ultimo_destino_sugerido', 'ninguno') or 'ninguno')
+            prompt = prompt.replace("{historial}", historial_str)
+
             respuesta, _ = await llm_router.generar(
                 _SYSTEM_INTENT, prompt, historial=historial, timeout=12,
             )
-            obj = _extraer_json(respuesta)
-            if obj:
-                intencion = self._parse_json(obj, len(recientes))
-                if intencion:
-                    return intencion
+            resultado = _parse_respuesta_llm(respuesta, len(recientes))
+            if resultado and resultado.intenciones:
+                return resultado
         except Exception as exc:  # noqa: BLE001
             log.warning("Intérprete LLM falló: %s", exc)
 
-        return self._heuristica(texto, recientes)
+        # Fallback: heurística local
+        intencion = _heuristica(texto, recientes)
+        return ResultadoInterpretacion(intenciones=[intencion])
 
-    # --- helpers ---------------------------------------------------------
 
-    def _parse_json(self, raw: dict, n_recientes: int) -> Intencion | None:
-        accion = raw.get("accion")
-        if accion not in ACCIONES:
-            accion = "conversacion"
-        int = Intencion(
-            accion=accion,
-            numero=_coerce_int(raw.get("numero")),
-            destino=normalizar_destino(str(raw.get("destino") or "")),
-            presupuesto=_coerce_int(raw.get("presupuesto")),
-            pasajeros=_coerce_int(raw.get("pasajeros")),
-            rango_meses=_coerce_int(raw.get("rango_meses")),
-            fecha=_coerce_fecha(raw.get("fecha")),
-            aerolinea=_coerce_aerolinea(raw.get("aerolinea")),
-            barato=bool(raw.get("barato")),
-            rapido=bool(raw.get("rapido")),
+def _formatear_historial(historial: list[dict]) -> str:
+    """Formatea el historial para el prompt del LLM."""
+    lineas = []
+    for msg in historial[-6:]:  # últimos 6 turnos
+        rol = "Usuario" if msg["role"] == "user" else "Bot"
+        lineas.append(f"- {rol}: {msg['content'][:100]}")
+    return "\n".join(lineas) if lineas else "(nueva conversación)"
+
+
+def _parse_respuesta_llm(respuesta: str | None, n_recientes: int) -> ResultadoInterpretacion | None:
+    """Parsea la respuesta JSON del LLM en un ResultadoInterpretacion."""
+    if not respuesta:
+        return None
+
+    obj = _extraer_json(respuesta)
+    if not obj:
+        return None
+
+    intents_raw = obj.get("intents", [])
+    if not intents_raw:
+        # Formato legacy: objeto directo
+        intents_raw = [obj]
+
+    intenciones = []
+    for raw in intents_raw[:2]:  # máximo 2 intenciones
+        intent = _parse_intencion(raw, n_recientes)
+        if intent:
+            intenciones.append(intent)
+
+    if not intenciones:
+        return None
+
+    return ResultadoInterpretacion(
+        intenciones=intenciones,
+        mensaje_clarificacion=obj.get("mensaje_clarificacion"),
+    )
+
+
+def _parse_intencion(raw: dict, n_recientes: int) -> Intencion | None:
+    """Convierte un dict JSON en una Intencion."""
+    accion = raw.get("accion", "conversacion")
+    if accion not in ACCIONES:
+        accion = "conversacion"
+
+    intent = Intencion(
+        accion=accion,
+        numero=_coerce_int(raw.get("numero")),
+        destino=normalizar_destino(str(raw.get("destino") or "")),
+        presupuesto=_coerce_int(raw.get("presupuesto")),
+        pasajeros=_coerce_int(raw.get("pasajeros")),
+        rango_meses=_coerce_int(raw.get("rango_meses")),
+        fecha=_coerce_fecha(raw.get("fecha")),
+        aerolinea=_coerce_aerolinea(raw.get("aerolinea")),
+        barato=bool(raw.get("barato")),
+        rapido=bool(raw.get("rapido")),
+        campo_actualizado=raw.get("campo_actualizado"),
+        moneda=raw.get("moneda"),
+    )
+
+    if intent.numero is not None and intent.numero > n_recientes:
+        intent.numero = None
+
+    return intent
+
+
+# --- Heurística local (fallback cuando no hay LLM) ------------------------
+
+
+def _heuristica(texto: str, recientes: list[dict]) -> Intencion:
+    """Fallback offline: regex y keyword matching."""
+    t = texto.lower().strip()
+
+    if t in ("/start", "hola", "buenas", "hi", "buenas tardes", "buenos días"):
+        return Intencion(accion="saludo")
+    if t in ("/help", "ayuda", "help", "que haces", "¿que haces?"):
+        return Intencion(accion="ayuda")
+    if any(w in t for w in ("olvida todo", "olvidar todo", "empezar de cero", "reset")):
+        return Intencion(accion="olvidar_todo")
+    if "guardados" in t and "ver" in t:
+        return Intencion(accion="ver_guardados")
+    if any(w in t for w in ("guardar", "guarda")):
+        return Intencion(accion="guardar_viaje")
+    if _quiere_comprar(t):
+        return Intencion(accion="comprar")
+
+    # Detectar cambio de parecer
+    if any(m in t for m in ("no, mejor", "no mejor", "cambié", "cambie", "en vez de", "en lugar de")):
+        destino = normalizar_destino(quitar_origen(texto))
+        if destino:
+            return Intencion(accion="actualizar_perfil", destino=destino, campo_actualizado="destino")
+
+    pasajeros = _extraer_pasajeros(t)
+    fecha = _extraer_fecha(t)
+    rango = _extraer_rango(t)
+    num_opcion = _extraer_opcion(t, len(recientes))
+    barato = any(w in t for w in ("barat", "econ", "regala", "poco"))
+    rapido = any(w in t for w in ("rapid", "direct", "corto"))
+    aerolinea = _extraer_aerolinea(t)
+    sin_origen = quitar_origen(texto)
+    destino = _destino_con_negacion(sin_origen)
+    if not destino:
+        destino = normalizar_destino(sin_origen)
+    huella = _huele_busqueda(t) or destino or fecha or rango
+
+    if rango and not fecha:
+        return Intencion(
+            accion="rango", rango_meses=rango, destino=destino,
+            pasajeros=pasajeros, barato=barato, aerolinea=aerolinea,
         )
-        if int.numero is not None and int.numero > n_recientes:
-            int.numero = None
-        return int
-
-    def _heuristica(
-        self, texto: str, recientes: list[dict]
-    ) -> Intencion:
-        """Recoge TODO lo que menciona el usuario (destino, fecha, pasajeros,
-        rango...) en una sola pasada y luego decide la acción. Así una frase
-        como "buscar vuelo a san andres para 4 personas en enero" no pierde
-        ninguna parte por el camino."""
-        t = texto.lower().strip()
-
-        if t in ("/start", "hola", "buenas", "hi", "buenas tardes", "buenos días"):
-            return Intencion(accion="saludo")
-        if t in ("/help", "ayuda", "help", "que haces", "¿que haces?"):
-            return Intencion(accion="ayuda")
-
-        # acciones aisladas de memoria
-        if "guardados" in t and "ver" in t:
-            return Intencion(accion="ver_guardados")
-        if any(w in t for w in ("guardar", "guarda")):
-            return Intencion(accion="guardar_viaje")
-        if "cambiar" in t:
-            return Intencion(accion="cambiar_presupuesto")
-        if _quiere_comprar(t):
-            return Intencion(accion="comprar")
-
-        # ---- recoger TODOS los campos que aparezcan ----
-        pasajeros = _extraer_pasajeros(t)
-        fecha = _extraer_fecha(t)
-        rango = _extraer_rango(t)
-        num_opcion = _extraer_opcion(t, len(recientes))
-        barato = any(w in t for w in ("barat", "econ", "regala", "poco"))
-        rapido = any(w in t for w in ("rapid", "direct", "corto"))
-        aerolinea = _extraer_aerolinea(t)
-        sin_origen = quitar_origen(texto)
-        destino = _destino_con_negacion(sin_origen)
-        if not destino:
-            destino = normalizar_destino(sin_origen)
-        huella = _huele_busqueda(t) or destino or fecha or rango
-
-        # ---- decidir la acción central ----
-        if rango and not fecha:
-            # "lo más barato en 3 meses" -> rango, portando destino si lo dió
+    if destino or huella:
+        if destino:
             return Intencion(
-                accion="rango", rango_meses=rango, destino=destino,
+                accion="elegir_destino", destino=destino, fecha=fecha,
                 pasajeros=pasajeros, barato=barato, aerolinea=aerolinea,
             )
-        if destino or huella:
-            if destino:
-                return Intencion(
-                    accion="elegir_destino", destino=destino, fecha=fecha,
-                    pasajeros=pasajeros, barato=barato, aerolinea=aerolinea,
-                )
-            if fecha:
-                return Intencion(
-                    accion="buscar", fecha=fecha, pasajeros=pasajeros, barato=barato,
-                    aerolinea=aerolinea,
-                )
-            return Intencion(accion="buscar", pasajeros=pasajeros, barato=barato, aerolinea=aerolinea)
+        if fecha:
+            return Intencion(
+                accion="buscar", fecha=fecha, pasajeros=pasajeros, barato=barato,
+                aerolinea=aerolinea,
+            )
+        return Intencion(accion="buscar", pasajeros=pasajeros, barato=barato, aerolinea=aerolinea)
 
-        if num_opcion:
-            return Intencion(accion="elegir_opcion", numero=num_opcion)
+    if num_opcion:
+        return Intencion(accion="elegir_opcion", numero=num_opcion)
 
-        if pasajeros:
-            return Intencion(accion="pasajeros", pasajeros=pasajeros)
+    if pasajeros:
+        return Intencion(accion="pasajeros", pasajeros=pasajeros)
 
-        return Intencion(accion="conversacion")
+    return Intencion(accion="conversacion")
 
 
-# --- utilidades ------------------------------------------------------------
+# --- utilidades -----------------------------------------------------------
 
 
 def _extraer_json(texto: str) -> dict | None:
@@ -244,7 +353,8 @@ def _coerce_fecha(v) -> Optional[str]:
     if not isinstance(v, str):
         return None
     try:
-        datetime.datetime.strptime(v, "%Y-%m-%d")
+        from datetime import datetime as _dt
+        _dt.strptime(v, "%Y-%m-%d")
         return v
     except (ValueError, TypeError):
         return None
@@ -344,13 +454,11 @@ def _extraer_fecha(t: str) -> str | None:
     elif any(w in t for w in ("fin", "final", "últim", "ultim", "cierre de")):
         periodo = 25
 
-    # día explícito: "el 10 de enero de 2027"
     m = re.search(r"\b(\d{1,2})\s+de\s+(\w+)", t)
     if m and m.group(2) in _MESES:
         dia = min(28, int(m.group(1)))
         return _armar(anyo, _MESES[m.group(2)], dia)
 
-    # "finales de año" / "fin de año" -> diciembre
     if any(w in t for w in ("de año", "del año", "de anio", "del anio")):
         if periodo and periodo == 25:
             return _armar(anyo, 12, 25)
@@ -359,7 +467,6 @@ def _extraer_fecha(t: str) -> str | None:
         if any(w in t for w in ("mediad", "mitad")):
             return _armar(anyo, 6, 15)
 
-    # mes + (año)
     for nombre, n in _MESES.items():
         if nombre in t or (len(nombre) > 4 and nombre[:4] in t):
             dia = periodo or 15
@@ -373,7 +480,7 @@ def _armar(anyo: int | None, mes: int, dia: int) -> str | None:
     hoy = _dt.datetime.now().date()
     a = anyo or hoy.year
     if anyo is None and (mes, dia) <= (hoy.month, hoy.day):
-        a = hoy.year + 1  # "enero" sin año -> el próximo enero
+        a = hoy.year + 1
     if a < hoy.year:
         a = hoy.year
     if a > 2031:
@@ -386,6 +493,12 @@ def _armar(anyo: int | None, mes: int, dia: int) -> str | None:
 
 def _extraer_opcion(t: str, n_recientes: int) -> int | None:
     """'la 2', 'la opción 3', 'segunda' -> índice si hay opciones mostradas."""
+    _ORDINALES = {
+        "primera": 1, "primero": 1, "1ra": 1, "1ª": 1,
+        "segunda": 2, "segundo": 2, "2da": 2, "2ª": 2,
+        "tercera": 3, "tercero": 3, "3ra": 3, "3ª": 3,
+        "cuarta": 4, "4ta": 4, "quinta": 5, "5ta": 5,
+    }
     for palabra, n in _ORDINALES.items():
         if palabra in t:
             return n if n <= n_recientes else None
@@ -400,17 +513,13 @@ _NEGACION_MARCADORES = ("no ", "ya no", "no quiero", "mejor no", "si no", "sino"
 
 
 def _destino_con_negacion(texto: str) -> str | None:
-    """Si el usuario descarta un destino y propone otro, usa el último
-    ("mejor ya no gorgona si no que quiero buscar para medellin" -> Medellin)."""
+    """Si el usuario descarta un destino y propone otro, usa el último."""
     t = texto.lower()
     destinos = destinos_en_texto(texto)
     if not destinos:
         return None
-    # no hay corrección -> el primero mencionado
     if not any(m in t for m in _NEGACION_MARCADORES):
         return destinos[0]
-    # hay corrección -> tomar el destino que aparece después del 'no',
-    # o el último mencionado si no está claro
     pos_no = -1
     for m in _NEGACION_MARCADORES:
         idx = t.find(m)
@@ -447,5 +556,5 @@ def _extraer_rango(t: str) -> int | None:
         return None
     n = int(m.group(1))
     if "semana" in m.group(0):
-        return max(1, round(n / 4))  # "2 semanas" ~ medio mes
+        return max(1, round(n / 4))
     return max(1, n)
