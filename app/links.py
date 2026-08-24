@@ -5,7 +5,7 @@ from urllib.parse import quote
 from app.destinos import DESTINOS
 
 
-def link_google_flights(origen: str, destino: str, fecha: str) -> str:
+def link_google_flights(origen: str, destino: str, fecha: str) -> str | None:
     """Devuelve un link de búsqueda de Google Flights para ese vuelo.
 
     Formato entendido por Google:

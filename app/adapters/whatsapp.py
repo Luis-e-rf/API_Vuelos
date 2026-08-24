@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
 
 import httpx
 
 from app.config import (
-    WA_BUSINESS_PHONE,
+    WA_APP_SECRET,
     WA_GRAPH_URL,
     WA_PHONE_NUMBER_ID,
     WA_TOKEN,
@@ -15,11 +17,14 @@ from app.models import MensajeEntrada, MensajeSalida
 
 log = logging.getLogger(__name__)
 
+_MAX_TEXT_LEN = 4096
+
 
 class WhatsAppAdapter:
     """Adaptador WhatsApp Cloud API (Meta).
 
     Parse (webhook entrante):
+      - Verifica firma HMAC-SHA256 (x-hub-signature-256).
       - Mensajes de texto, imagen y ubicación del usuario.
       - Ignora statuses (entregado/leído) y mensajes del propio bot.
 
@@ -28,12 +33,7 @@ class WhatsAppAdapter:
         media por link público HTTPS, lo cual sirve para las fotos de
         Wikimedia). Aún no se usan plantillas: asume mensajes dentro de la
         ventana de 24 horas (típico de una demo).
-
-    Configuración (variables de entorno, ver .env.example):
-      - WHATSAPP_TOKEN: token permanente de la app de Meta Developers.
-      - WHATSAPP_PHONE_NUMBER_ID: ID del número de negocio que envía.
-      - WHATSAPP_BUSINESS_PHONE: número verificado que recibe la demo.
-      - WHATSAPP_VERIFY_TOKEN: token para verificar el webhook ante Meta.
+      - Respeta límite de 4096 caracteres de WhatsApp.
     """
 
     canal: str = "whatsapp"
@@ -43,6 +43,21 @@ class WhatsAppAdapter:
         if hub_mode == "subscribe" and hub_token == WA_VERIFY_TOKEN:
             return hub_challenge
         return None
+
+    def verificar_firma(self, body: bytes, signature: str | None) -> bool:
+        """Verifica la firma HMAC-SHA256 del webhook de WhatsApp.
+
+        Meta firma cada POST con x-hub-signature-256 = "sha256=<hex>".
+        Si WA_APP_SECRET no está configurado, acepta todo (backward compat).
+        """
+        if not WA_APP_SECRET:
+            return True
+        if not signature:
+            return False
+        expected = "sha256=" + hmac.new(
+            WA_APP_SECRET.encode(), body, hashlib.sha256
+        ).hexdigest()
+        return hmac.compare_digest(expected, signature)
 
     def parse(self, update: dict) -> MensajeEntrada | None:
         try:
@@ -73,23 +88,26 @@ class WhatsAppAdapter:
         except (KeyError, IndexError, TypeError):
             return None
 
-    async def enviar(self, chat_id: str, salida: MensajeSalida) -> bool:
+    async def enviar(self, chat_id: str, salida: MensajeSalida) -> None:
         if not WA_TOKEN or not WA_PHONE_NUMBER_ID:
             log.warning("WhatsApp no configurado (WA_TOKEN o WA_PHONE_NUMBER_ID vacío).")
-            return False
+            return
 
         url = f"{WA_GRAPH_URL}/{WA_PHONE_NUMBER_ID}/messages"
         headers = {
             "Authorization": f"Bearer {WA_TOKEN}",
             "Content-Type": "application/json",
         }
+
+        texto = salida.texto[:_MAX_TEXT_LEN]
+
         if salida.foto_url:
             body = {
                 "messaging_product": "whatsapp",
                 "recipient_type": "individual",
                 "to": chat_id,
                 "type": "image",
-                "image": {"link": salida.foto_url, "caption": salida.texto},
+                "image": {"link": salida.foto_url, "caption": texto},
             }
         else:
             body = {
@@ -97,7 +115,7 @@ class WhatsAppAdapter:
                 "recipient_type": "individual",
                 "to": chat_id,
                 "type": "text",
-                "text": {"body": salida.texto},
+                "text": {"body": texto},
             }
 
         try:
@@ -109,18 +127,5 @@ class WhatsAppAdapter:
                     resp.status_code,
                     resp.text[:300],
                 )
-                return False
-            return True
         except httpx.HTTPError as exc:
             log.error("WhatsApp enviar error de red: %s", exc)
-            return False
-
-    def accion_invalida(self, chat_id: str, texto: str) -> None:
-        """Mensaje cuando el usuario pulsa un botón de opción no disponible.
-
-        WhatsApp no permite mandar botones arbitrarios fuera de plantillas, así
-        que las opciones de `MensajeSalida.opciones` se envían como texto. Si
-        alguien teclea exactamente una opción, se procesa normal. Este hook se
-        deja por si en el futuro se usan listas interactivas (type=list).
-        """
-        return None

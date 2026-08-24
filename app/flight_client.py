@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Optional
@@ -137,7 +138,8 @@ class FlightClient:
     ) -> list[OpcionVuelo]:
         if self.real:
             reales = await self._buscar_google(
-                origen, fecha or fecha_default(), numero, destino=destino, aerolinea=aerolinea
+                origen, fecha or fecha_default(), numero, destino=destino,
+                aerolinea=aerolinea, pasajeros=pasajeros,
             )
             if reales:
                 return [_por_pasajeros(o, pasajeros) for o in reales]
@@ -167,7 +169,8 @@ class FlightClient:
         mejores: list[OpcionVuelo] = []
         if self.real:
             for f in fechas:
-                opciones = await self._buscar_google(origen, f, numero, destino=destino, aerolinea=aerolinea)
+                opciones = await self._buscar_google(origen, f, numero, destino=destino,
+                                                     aerolinea=aerolinea, pasajeros=pasajeros)
                 for o in opciones:
                     mejores.append(o)
         else:
@@ -184,7 +187,7 @@ class FlightClient:
 
     async def _buscar_google(
         self, origen: str, fecha: str, numero: int, destino: Optional[str] = None,
-        aerolinea: Optional[str] = None,
+        aerolinea: Optional[str] = None, pasajeros: int = 1,
     ) -> list[OpcionVuelo]:
         """Pide precios reales a Google Flights por origen->varios destinos
         (o solo el destino pedido)."""
@@ -217,7 +220,7 @@ class FlightClient:
                         ],
                         seat="economy",
                         trip="one-way",
-                        passengers=Passengers(adults=1, children=0),
+                        passengers=Passengers(adults=max(1, pasajeros), children=0),
                         language="es",
                         currency="COP",
                     ),
@@ -260,7 +263,7 @@ class FlightClient:
         """Opciones realistas dentro del presupuesto (solo offline/degradado)."""
         origen = origen or "Bogota"
         fecha = fecha or fecha_default()
-        rnd = random.Random(f"{origen}|{fecha}")
+        rnd = random.Random(f"{origen}|{fecha}|{int(time.time()) // 3600}")
         pool = [destino] if destino else _PRECIOS_COP.keys()
         destinos = sorted(
             (d for d in pool if d != origen and (
@@ -300,7 +303,7 @@ def _sabado(base: datetime) -> str:
 
 
 def _por_pasajeros(o: OpcionVuelo, pasajeros: int) -> OpcionVuelo:
-    if pasajeros and pasajeros > 1:
+    if pasajeros > 1:
         o.precio_cop = int(o.precio_cop * pasajeros / 1000) * 1000
     return o
 

@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from app.flight_client import OpcionVuelo
 
+# Tasas de cambio aproximadas (actualizar periódicamente)
+# En producción, usar una API como exchangerate-api.com
+_USD_COP = 4000
+_EUR_COP = 4400
+
 
 def formatear_opciones(opciones: list[OpcionVuelo], presupuesto_cop: int, pasajeros: int = 1) -> str:
     """Convierte las ofertas en un mensaje cálido, numeradas para escoger."""
@@ -27,4 +32,4 @@ def formatear_opciones(opciones: list[OpcionVuelo], presupuesto_cop: int, pasaje
 
 
 def _usd(cop: int) -> str:
-    return f"≈ ${round(cop / 4000):,} USD"
+    return f"≈ ${round(cop / _USD_COP):,} USD"

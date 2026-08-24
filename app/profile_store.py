@@ -66,7 +66,11 @@ class ProfileStore:
             log.warning("Redis guardar falló para %s: %s", key, exc)
 
     async def actualizar(self, update: dict, chat_id: str, canal: str) -> None:
-        """Actualiza campos del perfil con valores diferentes de omisión."""
+        """Actualiza campos del perfil con valores diferentes de omisión.
+
+        Nota: Este método tiene un race condition (read-then-write).
+        Preferir usar leer() -> modificar -> guardar() en el orquestador.
+        """
         perfil = await self.leer(chat_id, canal)
         nuevos: dict = {k: v for k, v in update.items() if v is not None}
         for k, v in nuevos.items():

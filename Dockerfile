@@ -15,14 +15,20 @@ FROM cgr.dev/chainguard/python:latest
 WORKDIR /app
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PYTHONPATH="/app/.venv/lib/python3.14/site-packages"
+    PYTHONUNBUFFERED=1
 
 COPY --from=builder /app/.venv /app/.venv
 COPY . .
+
+# Detectar versión de Python y crear script de inicio
+RUN PYVER=$(python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')") && \
+    echo "#!/bin/sh" > /app/start.sh && \
+    echo "export PYTHONPATH=/app/.venv/lib/python${PYVER}/site-packages" >> /app/start.sh && \
+    echo "exec python run.py" >> /app/start.sh && \
+    chmod +x /app/start.sh
 
 EXPOSE 8080
 
 USER nonroot
 
-CMD ["python", "run.py"]
+CMD ["/bin/sh", "/app/start.sh"]

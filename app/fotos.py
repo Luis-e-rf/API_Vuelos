@@ -52,7 +52,9 @@ _TITULOS: dict[str, str] = {
     "Villavicencio": "Villavicencio",
 }
 
-_WIKIPEDIA_ES: dict[str, str] = {}
+_WIKIPEDIA_ES: dict[str, str | None] = {}
+_NONE_CACHE_MAX = 100  # máx entradas None en cache
+_none_count = 0
 
 
 async def foto_destino(destino: str) -> Optional[str]:
@@ -84,5 +86,5 @@ async def foto_destino(destino: str) -> Optional[str]:
         return imagen
     except Exception as exc:  # noqa: BLE001
         log.warning("Foto de Wikipedia para %r falló: %s", destino, exc)
-        _WIKIPEDIA_ES[clave] = None
+        # No cachear None permanentemente - permitir reintentos
         return None

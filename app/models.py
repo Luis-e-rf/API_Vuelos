@@ -38,8 +38,6 @@ class Perfil:
     destino: Optional[str] = None
     presupuesto: Optional[int] = None
     moneda: Optional[str] = None
-    pasaporte: Optional[bool] = None
-    nombre: Optional[str] = None
     ultimo_destino_sugerido: Optional[str] = None
     esperando: Optional[str] = None
     # Últimas opciones mostradas (para referencias como "la 3")
@@ -49,7 +47,6 @@ class Perfil:
     # Aerolínea preferida si el usuario la pidió ("con wingo")
     aerolinea: Optional[str] = None
     viajes_guardados: list[dict] = field(default_factory=list)
-    timestamps: list[str] = field(default_factory=list)
     # Historial de conversación (últimos 20 turnos, expira tras 48h)
     historial: list[dict] = field(default_factory=list)
     # Timestamp de último mensaje (para detectar expiración de sesión)

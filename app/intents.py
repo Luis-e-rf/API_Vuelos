@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from string import Template
 from dataclasses import asdict, dataclass
 from typing import Optional
 
@@ -164,16 +165,18 @@ class Interpretador:
 
         # -------- LLM
         try:
-            prompt = _PROMPT_INTENT
-            prompt = prompt.replace("{mensaje}", texto)
-            prompt = prompt.replace("{recientes}", json.dumps(recientes))
-            prompt = prompt.replace("{presupuesto}", presupuesto_str)
-            prompt = prompt.replace("{moneda}", p.get('moneda', '') or '')
-            prompt = prompt.replace("{origen}", p.get('origen', 'desconocido') or 'desconocido')
-            prompt = prompt.replace("{destino}", p.get('destino', 'ninguno') or 'ninguno')
-            prompt = prompt.replace("{pasajeros}", str(p.get('pasajeros', 1)))
-            prompt = prompt.replace("{ultimo_destino}", p.get('ultimo_destino_sugerido', 'ninguno') or 'ninguno')
-            prompt = prompt.replace("{historial}", historial_str)
+            template = Template(_PROMPT_INTENT)
+            prompt = template.safe_substitute(
+                mensaje=texto,
+                recientes=json.dumps(recientes),
+                presupuesto=presupuesto_str,
+                moneda=p.get('moneda', '') or '',
+                origen=p.get('origen', 'desconocido') or 'desconocido',
+                destino=p.get('destino', 'ninguno') or 'ninguno',
+                pasajeros=str(p.get('pasajeros', 1)),
+                ultimo_destino=p.get('ultimo_destino_sugerido', 'ninguno') or 'ninguno',
+                historial=historial_str,
+            )
 
             respuesta, _ = await llm_router.generar(
                 _SYSTEM_INTENT, prompt, historial=historial, timeout=12,
@@ -186,6 +189,15 @@ class Interpretador:
 
         # Fallback: heurística local
         intencion = _heuristica(texto, recientes)
+        if intencion.accion == "conversacion":
+            # Si la heurística tampoco entendió, informar al usuario
+            return ResultadoInterpretacion(
+                intenciones=[intencion],
+                mensaje_clarificacion=(
+                    "Disculpa, tuve un problema técnico. ¿Puedes reformular tu mensaje? "
+                    "Por ejemplo: 'busca vuelos a Cartagena' o 'ayuda'."
+                ),
+            )
         return ResultadoInterpretacion(intenciones=[intencion])
 
 
@@ -194,7 +206,7 @@ def _formatear_historial(historial: list[dict]) -> str:
     lineas = []
     for msg in historial[-6:]:  # últimos 6 turnos
         rol = "Usuario" if msg["role"] == "user" else "Bot"
-        lineas.append(f"- {rol}: {msg['content'][:100]}")
+        lineas.append(f"- {rol}: {msg['content'][:300]}")
     return "\n".join(lineas) if lineas else "(nueva conversación)"
 
 
@@ -533,13 +545,13 @@ def _destino_con_negacion(texto: str) -> str | None:
 
 
 def _quiere_comprar(t: str) -> bool:
-    """'lo quiero', 'comprar', 'reservar', 'dame el link' -> comprar."""
+    """'lo quiero', 'comprar este', 'reservar', 'dame el link' -> comprar."""
     return any(
         w in t for w in (
             "lo quiero", "quiero comprar", "comprar este", "compralo", "cómpramelo",
             "reservar", "dame el link", "dame el enlace", "link de compra",
             "quiero el vuelo", "como compro", "cómo compro", "comprar el vuelo",
-            "adquirir", "comprar",
+            "adquirir",
         )
     ) and not any(w in t for w in ("busca", "busco", "barato", "destino", "vuelo a"))
 

@@ -57,9 +57,20 @@ class Orquestador:
 
         # Actualizar timestamp de última conexión
         perfil.ultima_conexion = _ahora()
-        perfil.timestamps.append(_ahora())
-        if len(perfil.timestamps) > 50:
-            perfil.timestamps = perfil.timestamps[-50:]
+
+        # Si el usuario estaba "esperando" una respuesta (cambiar_presupuesto),
+        # procesar el mensaje directamente como actualización de ese campo.
+        if perfil.esperando:
+            respuesta = await self._procesar_esperando(mensaje, perfil)
+            if respuesta:
+                perfil.historial.append({"role": "user", "content": mensaje.texto})
+                perfil.historial.append({"role": "assistant", "content": respuesta.texto})
+                if len(perfil.historial) > 20:
+                    perfil.historial = perfil.historial[-20:]
+                perfil.esperando = None
+                await self.store.guardar(perfil, mensaje.canal)
+                await sender.enviar(mensaje.chat_id, respuesta)
+                return
 
         # LLM extrae intención con contexto completo
         perfil_dict = perfil.to_dict()
@@ -247,6 +258,28 @@ class Orquestador:
             )
         return MensajeSalida("¿Qué te gustaría cambiar? Puedo actualizar destino, presupuesto o pasajeros.")
 
+    async def _procesar_esperando(self, m: MensajeEntrada, p: Perfil) -> Optional[MensajeSalida]:
+        """Procesa un mensaje cuando el usuario está 'esperando' una respuesta."""
+        esperando = p.esperando
+        if esperando == "presupuesto":
+            # Intentar extraer presupuesto del mensaje
+            resultado = await self.interprete.interpretar(
+                m.texto, perfil_actual=p.to_dict(),
+            )
+            if resultado.intenciones:
+                intent = resultado.intenciones[0]
+                if intent.presupuesto:
+                    p.presupuesto = intent.presupuesto
+                    p.moneda = intent.moneda or "COP"
+                    return MensajeSalida(
+                        f"Presupuesto actualizado a {_moneda(p.presupuesto)}. "
+                        "¿Hacia dónde quieres ir o busco opciones?"
+                    )
+            return MensajeSalida(
+                "No entendí el presupuesto. Dime algo como '500 dólares' o 'un millón'."
+            )
+        return None
+
     async def _respuesta_buscar(
         self, p: Perfil, m: MensajeEntrada, fecha: Optional[str] = None,
         aerolinea: Optional[str] = None,
@@ -422,10 +455,14 @@ def _moneda(numero: int) -> str:
 
 
 def _a_cop(monto: int, moneda: Optional[str]) -> int:
+    # Tasas de cambio aproximadas (actualizar periódicamente)
+    # En producción, usar una API como exchangerate-api.com
+    _USD_COP = 4000
+    _EUR_COP = 4400
     if moneda == "USD":
-        return round(monto * 4000)
+        return round(monto * _USD_COP)
     if moneda == "EUR":
-        return round(monto * 4400)
+        return round(monto * _EUR_COP)
     return monto
 
 

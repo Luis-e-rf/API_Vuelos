@@ -28,12 +28,17 @@ class TelegramAdapter:
                     "chat_id": chat_id,
                     "photo": salida.foto_url,
                     "caption": salida.texto,
+                    "parse_mode": "Markdown",
                 }
                 if salida.opciones:
                     payload["reply_markup"] = self._keyboard(salida.opciones)
                 await client.post(f"{TELEGRAM_API}/sendPhoto", json=payload)
                 return
-            payload: dict = {"chat_id": chat_id, "text": salida.texto}
+            payload: dict = {
+                "chat_id": chat_id,
+                "text": salida.texto,
+                "parse_mode": "Markdown",
+            }
             if salida.opciones:
                 payload["reply_markup"] = self._keyboard(salida.opciones)
             await client.post(f"{TELEGRAM_API}/sendMessage", json=payload)
