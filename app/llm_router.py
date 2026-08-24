@@ -23,6 +23,7 @@ def proveedores_actuales() -> list[ProveedorLLM]:
 async def generar(
     system: str,
     prompt: str,
+    historial: Optional[list[dict]] = None,
     proveedores: Optional[list[ProveedorLLM]] = None,
     timeout: float = 8,
 ) -> tuple[Optional[str], Optional[str]]:
@@ -36,7 +37,7 @@ async def generar(
         if not provider.configurado():
             continue
         try:
-            respuesta = await provider.generar(system, prompt, timeout)
+            respuesta = await provider.generar(system, prompt, historial=historial, timeout=timeout)
             if respuesta:
                 return respuesta, provider.nombre
         except Exception as exc:  # noqa: BLE001 - cualquier fallo pasa al siguiente

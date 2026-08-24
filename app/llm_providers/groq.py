@@ -14,7 +14,10 @@ class Groq(ProveedorLLM):
     def configurado(self) -> bool:
         return bool(GROQ_API_KEY)
 
-    async def generar(self, system: str, prompt: str, timeout: float = 8) -> Optional[str]:
+    async def generar(
+        self, system: str, prompt: str, historial: Optional[list[dict]] = None, timeout: float = 8
+    ) -> Optional[str]:
         return await _post_openai(
-            _GROQ_URL, GROQ_API_KEY, system, prompt, "llama-3.3-70b-versatile", timeout
+            _GROQ_URL, GROQ_API_KEY, system, prompt, "llama-3.3-70b-versatile",
+            historial=historial, timeout=timeout,
         )

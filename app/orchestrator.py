@@ -47,9 +47,16 @@ class Orquestador:
     async def procesar(self, mensaje: MensajeEntrada, sender: Sender) -> None:
         perfil = await self.store.leer(mensaje.chat_id, mensaje.canal)
         perfil.timestamps.append(_ahora())
+        if len(perfil.timestamps) > 50:
+            perfil.timestamps = perfil.timestamps[-50:]
         if self._inferir_perfil(mensaje, perfil):
             await self.store.guardar(perfil, mensaje.canal)
         salida = await self._construir_respuesta(mensaje, perfil)
+        perfil.historial.append({"role": "user", "content": mensaje.texto})
+        perfil.historial.append({"role": "assistant", "content": salida.texto})
+        if len(perfil.historial) > 20:
+            perfil.historial = perfil.historial[-20:]
+        await self.store.guardar(perfil, mensaje.canal)
         await sender.enviar(mensaje.chat_id, salida)
 
     # --- inferencia implícita del perfil --------------------------------
@@ -105,7 +112,8 @@ class Orquestador:
             )
 
         intent = await self.interprete.interpretar(
-            t, opciones_recientes=p.opciones_recientes, presupuesto_actual=p.presupuesto
+            t, opciones_recientes=p.opciones_recientes,
+            presupuesto_actual=p.presupuesto, historial=p.historial,
         )
 
         # "si/ok/dale" después de "¿Busco opciones?" -> ejecuta la búsqueda
@@ -305,7 +313,9 @@ class Orquestador:
             f"Perfil: presupuesto={p.presupuesto}, moneda={p.moneda}, origen={p.origen or 'desconocido'}, "
             f"pasajeros={p.pasajeros}. Mensaje del usuario: {m.texto}"
         )
-        texto, proveedor = await llm_router.generar(_SYSTEM_PERSONA, contexto)
+        texto, proveedor = await llm_router.generar(
+            _SYSTEM_PERSONA, contexto, historial=p.historial,
+        )
         if texto:
             log.info("LLM (%s) respondió para chat %s", proveedor, m.chat_id)
             return MensajeSalida(texto, opciones=["Busca para este presupuesto", "Ayuda"])

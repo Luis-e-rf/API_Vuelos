@@ -34,14 +34,20 @@ class Gemini(ProveedorLLM):
     def configurado(self) -> bool:
         return bool(GEMINI_API_KEY)
 
-    async def generar(self, system: str, prompt: str, timeout: float = 8) -> Optional[str]:
+    async def generar(
+        self, system: str, prompt: str, historial: Optional[list[dict]] = None, timeout: float = 8
+    ) -> Optional[str]:
+        contents = []
+        if historial:
+            for msg in historial[-10:]:
+                role = "user" if msg["role"] == "user" else "model"
+                contents.append({"role": role, "parts": [{"text": msg["content"]}]})
+        contents.append({
+            "role": "user",
+            "parts": [{"text": f"{system}\n\n{prompt}"}],
+        })
         body = {
-            "contents": [
-                {
-                    "role": "user",
-                    "parts": [{"text": f"{system}\n\n{prompt}"}],
-                }
-            ],
+            "contents": contents,
             "generationConfig": {"temperature": 0.7, "maxOutputTokens": 500},
         }
         last_error: Exception | None = None
@@ -55,7 +61,6 @@ class Gemini(ProveedorLLM):
                         data = r.json()
                         return data["candidates"][0]["content"]["parts"][0]["text"].strip()
                     if r.status_code == 429:
-                        # Sin free tier para este modelo: probar otro, no desistir.
                         log.warning("Gemini %s sin free tier (429) -> siguiente", modelo)
                         continue
                     if r.status_code == 404 and "no longer available" in r.text.lower():

@@ -99,6 +99,7 @@ class Interpretador:
         mensaje: str,
         opciones_recientes: list[dict] | None = None,
         presupuesto_actual: Optional[int] = None,
+        historial: Optional[list[dict]] = None,
     ) -> Intencion:
         recientes = opciones_recientes or []
         texto = mensaje.strip()
@@ -108,7 +109,9 @@ class Interpretador:
             prompt = _PROMPT_INTENT
             prompt = prompt.replace("{mensaje}", texto)
             prompt = prompt.replace("{recientes}", json.dumps(recientes))
-            respuesta, _ = await llm_router.generar(_SYSTEM_INTENT, prompt, timeout=12)
+            respuesta, _ = await llm_router.generar(
+                _SYSTEM_INTENT, prompt, historial=historial, timeout=12,
+            )
             obj = _extraer_json(respuesta)
             if obj:
                 intencion = self._parse_json(obj, len(recientes))

@@ -20,24 +20,34 @@ class ProveedorLLM(ABC):
         """True si el proveedor tiene credenciales configuradas."""
 
     @abstractmethod
-    async def generar(self, system: str, prompt: str) -> Optional[str]:
+    async def generar(
+        self, system: str, prompt: str, historial: Optional[list[dict]] = None
+    ) -> Optional[str]:
         """Devuelve el texto del modelo o None si no hay respuesta útil."""
 
 
 async def _post_openai(
-    url: str, api_key: str, system: str, prompt: str, model: str, timeout: float = 8
+    url: str,
+    api_key: str,
+    system: str,
+    prompt: str,
+    model: str,
+    historial: Optional[list[dict]] = None,
+    timeout: float = 8,
 ) -> Optional[str]:
     """Helper para proveedores con API compatible OpenAI (Groq, DeepSeek, ...)."""
+    messages = [{"role": "system", "content": system}]
+    if historial:
+        for msg in historial[-10:]:  # últimos 10 turnos
+            messages.append({"role": msg["role"], "content": msg["content"]})
+    messages.append({"role": "user", "content": prompt})
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
     body = {
         "model": model,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": prompt},
-        ],
+        "messages": messages,
         "temperature": 0.7,
         "max_tokens": 500,
     }

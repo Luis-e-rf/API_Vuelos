@@ -44,6 +44,7 @@ class Perfil:
     aerolinea: Optional[str] = None
     viajes_guardados: list[dict] = field(default_factory=list)
     timestamps: list[str] = field(default_factory=list)
+    historial: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)

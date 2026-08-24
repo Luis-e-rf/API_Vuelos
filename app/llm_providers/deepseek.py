@@ -14,7 +14,10 @@ class DeepSeek(ProveedorLLM):
     def configurado(self) -> bool:
         return bool(DEEPSEEK_API_KEY)
 
-    async def generar(self, system: str, prompt: str, timeout: float = 8) -> Optional[str]:
+    async def generar(
+        self, system: str, prompt: str, historial: Optional[list[dict]] = None, timeout: float = 8
+    ) -> Optional[str]:
         return await _post_openai(
-            _DEEPSEEK_URL, DEEPSEEK_API_KEY, system, prompt, "deepseek-chat", timeout
+            _DEEPSEEK_URL, DEEPSEEK_API_KEY, system, prompt, "deepseek-chat",
+            historial=historial, timeout=timeout,
         )
