@@ -68,7 +68,7 @@ class ProfileStore:
     async def actualizar(self, update: dict, chat_id: str, canal: str) -> None:
         """Actualiza campos del perfil con valores diferentes de omisión."""
         perfil = await self.leer(chat_id, canal)
-        nuevos: dict = {k: v for k, v in update if v is not None}
+        nuevos: dict = {k: v for k, v in update.items() if v is not None}
         for k, v in nuevos.items():
             setattr(perfil, k, v)
         await self.guardar(perfil, canal)

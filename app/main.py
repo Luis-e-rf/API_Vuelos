@@ -70,13 +70,10 @@ async def verificar_whatsapp(request: Request):
 @app.post("/webhook/whatsapp")
 async def webhook_whatsapp(request: Request):
     """WhatsApp Cloud API enruta aquí sus mensajes."""
-    import sys
     raw = await request.body()
-    print(f"[DEBUG] WA POST RECIBIDO: {raw[:500]}", file=sys.stderr, flush=True)
     log.info("WA webhook POST recibido: %s", raw[:500])
     update = await request.json()
     entrada = _whatsapp.parse(update)
-    print(f"[DEBUG] WA parse -> {entrada}", file=sys.stderr, flush=True)
     log.info("WA parse -> %s", entrada)
     if entrada:
         await _orquestador.procesar(entrada, _whatsapp)

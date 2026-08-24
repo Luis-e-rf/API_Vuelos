@@ -25,4 +25,4 @@ EXPOSE 8080
 
 USER nonroot
 
-CMD ["run.py"]
+CMD ["python", "run.py"]
