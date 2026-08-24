@@ -174,6 +174,20 @@ class Interpretador:
             )
             resultado = _parse_respuesta_llm(respuesta, len(recientes))
             if resultado and resultado.intenciones:
+                principal = resultado.intenciones[0]
+                # Validar: si el LLM puso datos claramente wrong, fallback a heurística
+                if principal.destino and principal.origen and principal.destino == principal.origen:
+                    log.warning("LLM destino==origen (%s), fallback a heurística", principal.destino)
+                    resultado = None  # forzar fallback
+                elif principal.presupuesto and principal.presupuesto < 10000:
+                    log.warning("LLM presupuesto bajo (%s), posible error de parsing", principal.presupuesto)
+                    resultado = None  # forzar fallback
+                elif principal.destino and not principal.origen and _huele_busqueda(texto.lower()):
+                    h = _heuristica(texto, recientes)
+                    if h.origen:
+                        log.info("LLM sin origen, heurística detectó origen=%s", h.origen)
+                        principal.origen = h.origen
+            if resultado and resultado.intenciones:
                 return resultado
         except Exception as exc:  # noqa: BLE001
             log.warning("Intérprete LLM falló: %s", exc)
