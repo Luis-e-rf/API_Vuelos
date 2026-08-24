@@ -89,15 +89,19 @@ class Orquestador:
 
         # Procesar cada intención
         respuestas = []
+        skip_historial = False
         for intent in resultado.intenciones:
-            resp = await self._dispatch(intent, mensaje, perfil)
+            resp, skip = await self._dispatch(intent, mensaje, perfil)
             if resp:
                 respuestas.append(resp)
+            if skip:
+                skip_historial = True
 
-        # Guardar historial
+        # Guardar historial (skip si fue olvidar_todo para no contaminar el siguiente turno)
         perfil.historial.append({"role": "user", "content": mensaje.texto})
-        for r in respuestas:
-            perfil.historial.append({"role": "assistant", "content": r.texto})
+        if not skip_historial:
+            for r in respuestas:
+                perfil.historial.append({"role": "assistant", "content": r.texto})
         if len(perfil.historial) > 20:
             perfil.historial = perfil.historial[-20:]
 
@@ -108,22 +112,22 @@ class Orquestador:
 
     async def _dispatch(
         self, intent: Intencion, m: MensajeEntrada, p: Perfil
-    ) -> Optional[MensajeSalida]:
-        """Despacha una intención a la respuesta correspondiente."""
+    ) -> tuple[Optional[MensajeSalida], bool]:
+        """Despacha una intención. Retorna (respuesta, skip_historial)."""
 
         if intent.accion == "olvidar_todo":
-            return await self._respuesta_olvidar_todo(m, p)
+            return await self._respuesta_olvidar_todo(m, p), True
 
         if intent.accion == "saludo":
             if p.presupuesto and p.destino:
                 return MensajeSalida(
                     f"¡Hola! Veo que estabas buscando vuelos a *{p.destino}* "
                     f"con {_moneda(p.presupuesto)}. ¿Quieres que siga buscando o algo nuevo?"
-                )
+                ), False
             return MensajeSalida(
                 "¡Hola! Soy tu asistente de vuelos ✈️. Cuéntame con cuánto cuentas "
                 "y hacia dónde quieres ir."
-            )
+            ), False
 
         if intent.accion == "ayuda":
             return MensajeSalida(
@@ -134,15 +138,15 @@ class Orquestador:
                 "• 'somos 2 personas'\n"
                 "• 'olvida todo' para empezar de cero\n\n"
                 "Sin formularios, voy entendiendo poco a poco."
-            )
+            ), False
 
         if intent.accion == "actualizar_perfil":
-            return await self._respuesta_actualizar_perfil(intent, m, p)
+            return await self._respuesta_actualizar_perfil(intent, m, p), False
 
         if intent.accion == "cambiar_presupuesto":
             p.esperando = "presupuesto"
             await self.store.guardar(p, m.canal)
-            return MensajeSalida("¡Claro! ¿Con cuánto presupuesto cuentas ahora? (ej: 250 dólares)")
+            return MensajeSalida("¡Claro! ¿Con cuánto presupuesto cuentas ahora? (ej: 250 dólares)"), False
 
         if intent.accion == "pasajeros" and intent.pasajeros:
             p.pasajeros = max(1, intent.pasajeros)
@@ -151,7 +155,7 @@ class Orquestador:
                 f"¡Anotado, {p.pasajeros} pasajeros! Los precios que te muestre serán "
                 "por todo el grupo. ¿Busco opciones?",
                 opciones=["Busca para este presupuesto"],
-            )
+            ), False
 
         if intent.accion == "guardar_viaje" and p.opciones_recientes:
             guardado = p.opciones_recientes[0]
@@ -160,24 +164,24 @@ class Orquestador:
             return MensajeSalida(
                 f"Guardé tu vuelo a *{guardado.get('destino')}* por "
                 f"{_moneda(guardado.get('precio_cop', 0))}. Escribe 'ver guardados' cuando quieras verlo."
-            )
+            ), False
 
         if intent.accion == "ver_guardados":
             if not p.viajes_guardados:
                 return MensajeSalida(
                     "Todavía no has guardado viajes. Cuando elijas uno, dime 'guarda este viaje'."
-                )
+                ), False
             lineas = "Tus viajes guardados:\n" + "\n".join(
                 f"• {v.get('destino')} · {_moneda(v.get('precio_cop', 0))} · {v.get('fecha', '')}"
                 for v in p.viajes_guardados
             )
-            return MensajeSalida(lineas)
+            return MensajeSalida(lineas), False
 
         if intent.accion == "comprar":
-            return await self._respuesta_comprar(p, m)
+            return await self._respuesta_comprar(p, m), False
 
         if intent.accion == "elegir_opcion" and intent.numero:
-            return await self._respuesta_opcion(p, m, intent.numero)
+            return await self._respuesta_opcion(p, m, intent.numero), False
 
         if intent.accion == "elegir_destino" and intent.destino:
             # Actualizar perfil con datos del LLM
@@ -190,7 +194,7 @@ class Orquestador:
                 p.pasajeros = max(1, intent.pasajeros)
             return await self._respuesta_destino(
                 p, m, intent.destino, fecha=intent.fecha, aerolinea=intent.aerolinea,
-            )
+            ), False
 
         if intent.accion == "rango" and intent.rango_meses:
             if intent.origen:
@@ -198,7 +202,7 @@ class Orquestador:
             if intent.presupuesto and intent.moneda:
                 p.presupuesto = intent.presupuesto
                 p.moneda = intent.moneda
-            return await self._respuesta_rango(p, m, intent.rango_meses, aerolinea=intent.aerolinea)
+            return await self._respuesta_rango(p, m, intent.rango_meses, aerolinea=intent.aerolinea), False
 
         if intent.accion == "buscar":
             if intent.origen:
@@ -211,10 +215,10 @@ class Orquestador:
             if intent.destino:
                 return await self._respuesta_destino(
                     p, m, intent.destino, fecha=intent.fecha, aerolinea=intent.aerolinea,
-                )
-            return await self._respuesta_buscar(p, m, fecha=intent.fecha, aerolinea=intent.aerolinea)
+                ), False
+            return await self._respuesta_buscar(p, m, fecha=intent.fecha, aerolinea=intent.aerolinea), False
 
-        return await self._respuesta_conversacion(m, p)
+        return await self._respuesta_conversacion(m, p), False
 
     # --- respuestas concretas -------------------------------------------
 

@@ -66,92 +66,62 @@ _SYSTEM_INTENT = (
     "No escribas nada más que el JSON."
 )
 
-_PROMPT_INTENT = """Analiza el mensaje del usuario considerando el contexto de conversación.
+_PROMPT_INTENT = """Eres el intérprete de un bot de vuelos. Analiza el mensaje y devuelve JSON.
 
-PERFIL ACTUAL DEL USUARIO:
-- Presupuesto: {presupuesto} {moneda}
+PERFIL:
 - Origen: {origen}
-- Destino guardado: {destino}
+- Destino: {destino}
+- Presupuesto: {presupuesto} {moneda}
 - Pasajeros: {pasajeros}
-- Último destino sugerido: {ultimo_destino}
 
-HISTORIAL RECIENTE (últimos turnos):
+HISTORIAL:
 {historial}
 
-OPCIONES MOSTRADAS ANTERIORMENTE:
+OPCIONES ANTERIORES:
 {recientes}
 
-MENSAJE ACTUAL DEL USUARIO: "{mensaje}"
+MENSAJE: "{mensaje}"
 
-REGLAS IMPORTANTES:
+REGLAS:
 
-1. PATRÓN "DE X A Y": Si el usuario dice "de Bogotá a San Andrés" o "de Medellín a Cartagena":
-   - La PRIMERA ciudad es el ORIGEN (actualiza campo "origen" en el perfil)
-   - La SEGUNDA ciudad es el DESTINO
-   - Usa accion "buscar" (no "elegir_destino") porque quiere ver opciones de vuelo
+1. "de X a Y" = origen es X, destino es Y. Ejemplo:
+   "de Bogotá a San Andrés" → origen="Bogota", destino="San Andres", accion="buscar"
 
-2. CAMBIO DE PARECER: Si el usuario dice "no, mejor...", "cambié de opinión", "olvida eso", 
-   "en vez de", "no quiero X, quiero Y", usa accion "actualizar_perfil" y campo_actualizado 
-   indica qué cambió ("destino", "presupuesto", "fecha", "pasajeros").
+2. PRESUPUESTO:
+   - "1 millón" = 1000000
+   - "1 millón por persona" = 1000000 (el orquestador multiplica × pasajeros)
+   - "300 dólares" = 300 USD
+   - "600 mil" = 600000
 
-3. MÚLTIPLES INTENCIONES: Si el usuario menciona 2 destinos o búsquedas diferentes 
-   ("busca a Cartagena y también a San Andrés"), retorna un array "intents" con hasta 2 elementos.
-   Si menciona 3+, solo las 2 principales y un mensaje_clarificacion.
+3. PASAJEROS: "2 personas" = 2, "somos 2" = 2
 
-4. MODO SESIÓN: Si el historial está vacío y el usuario dice "hola", retorna accion "saludo".
-   Si el usuario referencia algo anterior ("¿y ese vuelo?", "el mismo", "sigue buscando"), 
-   usa el perfil guardado como contexto.
+4. RANGO: "lo más barato en 3 meses" o "sin importar el mes" → rango_meses=3
 
-5. PRESUPUESTO - IMPORTANTE:
-   - "1 millón" o "un millón" → 1000000 (COP)
-   - "1 millón por persona" → 1000000 COP por pasajero (multiplicar por pasajeros en el orquestador)
-   - "300 dólares" → 300 USD
-   - "600 mil" → 600000 COP
-   - "1.5 millones" → 1500000 COP
-   - Si NO menciona presupuesto, usa null (no inventes).
+5. CAMBIO: "no, mejor a X" → accion="actualizar_perfil"
 
-6. PASAJEROS:
-   - "2 personas" o "somos 2" → pasajeros: 2
-   - "para 2" → pasajeros: 2
-   - Si no menciona, usa null (no inventes)
+6. Si menciona todo junto (origen+destino+presupuesto+pasajeros), usa "buscar"
 
-7. FECHA Y RANGO:
-   - "2027" → fecha: "2027-01-15"
-   - "próximo mes" → fecha ISO del próximo mes
-   - "lo más barato en 3 meses" o "sin importar el mes" → rango_meses: 3
-   - "en 2027 lo más barato posible" → rango_meses: 12, fecha: null
+EJEMPLOS:
+"de Bogotá a Cartagena, 1 millón, 2 personas" → {{"accion":"buscar","origen":"Bogota","destino":"Cartagena","presupuesto":1000000,"moneda":"COP","pasajeros":2}}
+"de Medellín a San Andrés, 500 mil, 1 persona" → {{"accion":"buscar","origen":"Medellin","destino":"San Andres","presupuesto":500000,"moneda":"COP","pasajeros":1}}
+"busca vuelos a Cartagena" → {{"accion":"buscar","destino":"Cartagena"}}
+"para 2 personas" → {{"accion":"pasajeros","pasajeros":2}}
 
-8. ACCIONES:
-   - "buscar": quiere ver opciones de vuelo (cuando menciona destino, origen, o pide buscar)
-   - "elegir_destino": solo cuando dice "quiero ir a X" sin mencionar origen ni opciones
-   - "rango": cuando pide "lo más barato en N meses"
-   - Si menciona TODO junto (destino + presupuesto + pasajeros + fecha), usa accion "buscar"
-
-RESPUESTA JSON (usa "intents" como array):
+RESPUESTA JSON:
 {{
-  "intents": [
-    {{
-      "accion": "buscar|elegir_opcion|elegir_destino|rango|cambiar_presupuesto|guardar_viaje|ver_guardados|pasajeros|comprar|actualizar_perfil|olvidar_todo|saludo|ayuda|conversacion",
-      "destino": "Ciudad Normalizada",
-      "origen": "Ciudad de Origen",
-      "presupuesto": 1000000,
-      "moneda": "COP",
-      "pasajeros": 2,
-      "fecha": "2027-01-15",
-      "rango_meses": 3,
-      "aerolinea": "Wingo",
-      "barato": true,
-      "rapido": false,
-      "campo_actualizado": "destino|presupuesto|fecha|pasajeros|null",
-      "numero": 1
-    }}
-  ],
+  "intents": [{{
+    "accion": "buscar|elegir_opcion|elegir_destino|rango|cambiar_presupuesto|pasajeros|comprar|actualizar_perfil|olvidar_todo|saludo|ayuda|conversacion",
+    "destino": "Ciudad",
+    "origen": "Ciudad",
+    "presupuesto": 1000000,
+    "moneda": "COP",
+    "pasajeros": 2,
+    "rango_meses": 3,
+    "barato": true,
+    "campo_actualizado": "destino|presupuesto|pasajeros|null"
+  }}],
   "mensaje_clarificacion": null
 }}
-
-Si solo hay 1 intención, "intents" tiene 1 elemento.
-Si hay 2 búsquedas diferentes, "intents" tiene 2 elementos.
-Si hay 3+, usa "mensaje_clarificacion" para pedir aclaración.
 """
 
 
@@ -196,7 +166,6 @@ class Interpretador:
                 origen=p.get('origen', 'desconocido') or 'desconocido',
                 destino=p.get('destino', 'ninguno') or 'ninguno',
                 pasajeros=str(p.get('pasajeros', 1)),
-                ultimo_destino=p.get('ultimo_destino_sugerido', 'ninguno') or 'ninguno',
                 historial=historial_str,
             )
 
@@ -285,6 +254,11 @@ def _parse_intencion(raw: dict, n_recientes: int) -> Intencion | None:
 
     if intent.numero is not None and intent.numero > n_recientes:
         intent.numero = None
+
+    # Corregir si el LLM puso la ciudad de origen como destino
+    # (ej: "de Bogotá a San Andrés" → LLM pone destino="Bogota")
+    if intent.destino and intent.origen and intent.destino == intent.origen:
+        intent.origen = None  # dejar que el orquestador use el origen del perfil
 
     return intent
 
