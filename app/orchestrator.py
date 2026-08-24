@@ -58,6 +58,16 @@ class Orquestador:
         # Actualizar timestamp de última conexión
         perfil.ultima_conexion = _ahora()
 
+        # Detección rápida de comandos de reset ANTES del LLM
+        # para evitar que el LLM vea datos viejos del perfil
+        texto_lower = mensaje.texto.lower().strip()
+        if any(w in texto_lower for w in ("olvida todo", "olvidar todo", "empezar de cero", "reset")):
+            respuesta = await self._respuesta_olvidar_todo(mensaje, perfil)
+            perfil.historial = []  # limpiar historial también
+            await self.store.guardar(perfil, mensaje.canal)
+            await sender.enviar(mensaje.chat_id, respuesta)
+            return
+
         # Si el usuario estaba "esperando" una respuesta (cambiar_presupuesto),
         # procesar el mensaje directamente como actualización de ese campo.
         if perfil.esperando:
@@ -74,6 +84,8 @@ class Orquestador:
 
         # LLM extrae intención con contexto completo
         perfil_dict = perfil.to_dict()
+        log.info("Perfil antes de LLM: origen=%s, destino=%s, presupuesto=%s, moneda=%s, pasajeros=%s",
+                 perfil.origen, perfil.destino, perfil.presupuesto, perfil.moneda, perfil.pasajeros)
         resultado = await self.interprete.interpretar(
             mensaje.texto,
             opciones_recientes=perfil.opciones_recientes,
@@ -86,6 +98,11 @@ class Orquestador:
         if resultado.mensaje_clarificacion:
             await sender.enviar(mensaje.chat_id, MensajeSalida(resultado.mensaje_clarificacion))
             return
+
+        # Log de intenciones detectadas
+        for intent in resultado.intenciones:
+            log.info("Intención: accion=%s, origen=%s, destino=%s, presupuesto=%s, moneda=%s, pasajeros=%s",
+                     intent.accion, intent.origen, intent.destino, intent.presupuesto, intent.moneda, intent.pasajeros)
 
         # Procesar cada intención
         respuestas = []
