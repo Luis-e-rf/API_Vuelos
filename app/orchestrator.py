@@ -58,14 +58,26 @@ class Orquestador:
         # Actualizar timestamp de última conexión
         perfil.ultima_conexion = _ahora()
 
-        # Detección rápida de comandos de reset ANTES del LLM
-        # para evitar que el LLM vea datos viejos del perfil
+        # === FLUJO RÁPIDO: comandos de reset ANTES del LLM ===
         texto_lower = mensaje.texto.lower().strip()
-        if any(w in texto_lower for w in ("olvida todo", "olvidar todo", "empezar de cero", "reset")):
-            respuesta = await self._respuesta_olvidar_todo(mensaje, perfil)
-            perfil.historial = []  # limpiar historial también
-            await self.store.guardar(perfil, mensaje.canal)
-            await sender.enviar(mensaje.chat_id, respuesta)
+        es_reset = any(w in texto_lower for w in ("olvida todo", "olvidar todo", "empezar de cero", "reset", "cancela todo", "cancelar todo"))
+        if es_reset:
+            p = perfil
+            p.origen = None
+            p.destino = None
+            p.presupuesto = None
+            p.moneda = None
+            p.pasajeros = 1
+            p.aerolinea = None
+            p.opciones_recientes = []
+            p.viajes_guardados = []
+            p.historial = []
+            p.esperando = None
+            p.ultimo_destino_sugerido = None
+            await self.store.guardar(p, mensaje.canal)
+            await sender.enviar(mensaje.chat_id, MensajeSalida(
+                "¡Listo! Empezamos de cero. Cuéntame: ¿hacia dónde quieres ir y con cuánto presupuesto?"
+            ))
             return
 
         # Si el usuario estaba "esperando" una respuesta (cambiar_presupuesto),
@@ -82,7 +94,7 @@ class Orquestador:
                 await sender.enviar(mensaje.chat_id, respuesta)
                 return
 
-        # LLM extrae intención con contexto completo
+        # === FLUJO NORMAL: LLM extrae intención ===
         perfil_dict = perfil.to_dict()
         log.info("Perfil antes de LLM: origen=%s, destino=%s, presupuesto=%s, moneda=%s, pasajeros=%s",
                  perfil.origen, perfil.destino, perfil.presupuesto, perfil.moneda, perfil.pasajeros)
@@ -106,19 +118,15 @@ class Orquestador:
 
         # Procesar cada intención
         respuestas = []
-        skip_historial = False
         for intent in resultado.intenciones:
-            resp, skip = await self._dispatch(intent, mensaje, perfil)
+            resp = await self._dispatch(intent, mensaje, perfil)
             if resp:
                 respuestas.append(resp)
-            if skip:
-                skip_historial = True
 
-        # Guardar historial (skip si fue olvidar_todo para no contaminar el siguiente turno)
+        # Guardar historial
         perfil.historial.append({"role": "user", "content": mensaje.texto})
-        if not skip_historial:
-            for r in respuestas:
-                perfil.historial.append({"role": "assistant", "content": r.texto})
+        for r in respuestas:
+            perfil.historial.append({"role": "assistant", "content": r.texto})
         if len(perfil.historial) > 20:
             perfil.historial = perfil.historial[-20:]
 
@@ -129,11 +137,11 @@ class Orquestador:
 
     async def _dispatch(
         self, intent: Intencion, m: MensajeEntrada, p: Perfil
-    ) -> tuple[Optional[MensajeSalida], bool]:
-        """Despacha una intención. Retorna (respuesta, skip_historial)."""
+    ) -> Optional[MensajeSalida]:
+        """Despacha una intención a la respuesta correspondiente."""
 
         if intent.accion == "olvidar_todo":
-            return await self._respuesta_olvidar_todo(m, p), True
+            return await self._respuesta_olvidar_todo(m, p)
 
         if intent.accion == "saludo":
             if p.presupuesto and p.destino:
