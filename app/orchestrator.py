@@ -181,6 +181,8 @@ class Orquestador:
 
         if intent.accion == "elegir_destino" and intent.destino:
             # Actualizar perfil con datos del LLM
+            if intent.origen:
+                p.origen = intent.origen
             if intent.presupuesto and intent.moneda:
                 p.presupuesto = intent.presupuesto
                 p.moneda = intent.moneda
@@ -191,12 +193,16 @@ class Orquestador:
             )
 
         if intent.accion == "rango" and intent.rango_meses:
+            if intent.origen:
+                p.origen = intent.origen
             if intent.presupuesto and intent.moneda:
                 p.presupuesto = intent.presupuesto
                 p.moneda = intent.moneda
             return await self._respuesta_rango(p, m, intent.rango_meses, aerolinea=intent.aerolinea)
 
         if intent.accion == "buscar":
+            if intent.origen:
+                p.origen = intent.origen
             if intent.presupuesto and intent.moneda:
                 p.presupuesto = intent.presupuesto
                 p.moneda = intent.moneda

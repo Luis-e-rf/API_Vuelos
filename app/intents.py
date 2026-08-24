@@ -43,6 +43,7 @@ class Intencion:
     accion: str = "conversacion"
     numero: Optional[int] = None              # si eligió una opción por posición
     destino: Optional[str] = None           # ciudad normalizada (canónica)
+    origen: Optional[str] = None            # ciudad de origen (si menciona "de X a Y")
     presupuesto: Optional[int] = None       # si mencionó un monto
     pasajeros: Optional[int] = None         # cuántos viajan
     rango_meses: Optional[int] = None       # "en los próximos N meses"
@@ -84,27 +85,47 @@ MENSAJE ACTUAL DEL USUARIO: "{mensaje}"
 
 REGLAS IMPORTANTES:
 
-1. CAMBIO DE PARECER: Si el usuario dice "no, mejor...", "cambié de opinión", "olvida eso", 
+1. PATRÓN "DE X A Y": Si el usuario dice "de Bogotá a San Andrés" o "de Medellín a Cartagena":
+   - La PRIMERA ciudad es el ORIGEN (actualiza campo "origen" en el perfil)
+   - La SEGUNDA ciudad es el DESTINO
+   - Usa accion "buscar" (no "elegir_destino") porque quiere ver opciones de vuelo
+
+2. CAMBIO DE PARECER: Si el usuario dice "no, mejor...", "cambié de opinión", "olvida eso", 
    "en vez de", "no quiero X, quiero Y", usa accion "actualizar_perfil" y campo_actualizado 
    indica qué cambió ("destino", "presupuesto", "fecha", "pasajeros").
 
-2. MÚLTIPLES INTENCIONES: Si el usuario menciona 2 destinos o búsquedas diferentes 
+3. MÚLTIPLES INTENCIONES: Si el usuario menciona 2 destinos o búsquedas diferentes 
    ("busca a Cartagena y también a San Andrés"), retorna un array "intents" con hasta 2 elementos.
-   Si menciona 3+, retorna solo las 2 principales y un mensaje_clarificacion.
+   Si menciona 3+, solo las 2 principales y un mensaje_clarificacion.
 
-3. MODO SESIÓN: Si el historial está vacío y el usuario dice "hola", retorna accion "saludo".
+4. MODO SESIÓN: Si el historial está vacío y el usuario dice "hola", retorna accion "saludo".
    Si el usuario referencia algo anterior ("¿y ese vuelo?", "el mismo", "sigue buscando"), 
    usa el perfil guardado como contexto.
 
-4. CONTEXTO: Si el usuario dice "para 2 personas" sin mencionar destino, asume que se refiere 
-   al destino guardado. Si dice "más barato", asume que se refiere al último destino buscado.
+5. PRESUPUESTO - IMPORTANTE:
+   - "1 millón" o "un millón" → 1000000 (COP)
+   - "1 millón por persona" → 1000000 COP por pasajero (multiplicar por pasajeros en el orquestador)
+   - "300 dólares" → 300 USD
+   - "600 mil" → 600000 COP
+   - "1.5 millones" → 1500000 COP
+   - Si NO menciona presupuesto, usa null (no inventes).
 
-5. PRESUPUESTO: Si el usuario dice "1 millón", "un millón", "1.000.000" → 1000000 COP.
-   Si dice "300 dólares" → 300 USD. Si dice "600 mil" → 600000 COP.
-   Si NO menciona presupuesto, usa null (no inventes).
+6. PASAJEROS:
+   - "2 personas" o "somos 2" → pasajeros: 2
+   - "para 2" → pasajeros: 2
+   - Si no menciona, usa null (no inventes)
 
-6. FECHA: "2027" → "2027-01-15". "próximo mes" → fecha ISO del próximo mes.
-   "lo más barato en 3 meses" → rango_meses: 3.
+7. FECHA Y RANGO:
+   - "2027" → fecha: "2027-01-15"
+   - "próximo mes" → fecha ISO del próximo mes
+   - "lo más barato en 3 meses" o "sin importar el mes" → rango_meses: 3
+   - "en 2027 lo más barato posible" → rango_meses: 12, fecha: null
+
+8. ACCIONES:
+   - "buscar": quiere ver opciones de vuelo (cuando menciona destino, origen, o pide buscar)
+   - "elegir_destino": solo cuando dice "quiero ir a X" sin mencionar origen ni opciones
+   - "rango": cuando pide "lo más barato en N meses"
+   - Si menciona TODO junto (destino + presupuesto + pasajeros + fecha), usa accion "buscar"
 
 RESPUESTA JSON (usa "intents" como array):
 {{
@@ -112,6 +133,7 @@ RESPUESTA JSON (usa "intents" como array):
     {{
       "accion": "buscar|elegir_opcion|elegir_destino|rango|cambiar_presupuesto|guardar_viaje|ver_guardados|pasajeros|comprar|actualizar_perfil|olvidar_todo|saludo|ayuda|conversacion",
       "destino": "Ciudad Normalizada",
+      "origen": "Ciudad de Origen",
       "presupuesto": 1000000,
       "moneda": "COP",
       "pasajeros": 2,
@@ -249,6 +271,7 @@ def _parse_intencion(raw: dict, n_recientes: int) -> Intencion | None:
         accion=accion,
         numero=_coerce_int(raw.get("numero")),
         destino=normalizar_destino(str(raw.get("destino") or "")),
+        origen=normalizar_destino(str(raw.get("origen") or "")),
         presupuesto=_coerce_int(raw.get("presupuesto")),
         pasajeros=_coerce_int(raw.get("pasajeros")),
         rango_meses=_coerce_int(raw.get("rango_meses")),
@@ -299,6 +322,15 @@ def _heuristica(texto: str, recientes: list[dict]) -> Intencion:
     barato = any(w in t for w in ("barat", "econ", "regala", "poco"))
     rapido = any(w in t for w in ("rapid", "direct", "corto"))
     aerolinea = _extraer_aerolinea(t)
+
+    # Detectar patrón "de X a Y" (origen -> destino)
+    origen, destino = _extraer_origen_destino(texto)
+    if origen and destino:
+        return Intencion(
+            accion="buscar", origen=origen, destino=destino, fecha=fecha,
+            pasajeros=pasajeros, barato=barato, aerolinea=aerolinea,
+        )
+
     sin_origen = quitar_origen(texto)
     destino = _destino_con_negacion(sin_origen)
     if not destino:
@@ -542,6 +574,19 @@ def _destino_con_negacion(texto: str) -> str | None:
         if idx > pos_no:
             return destino
     return destinos[-1]
+
+
+def _extraer_origen_destino(texto: str) -> tuple[str | None, str | None]:
+    """Detecta patrón 'de X a Y' y retorna (origen, destino)."""
+    t = texto.lower()
+    # Patrones: "de bogota a san andres", "desde medellin hasta cartagena"
+    patron = re.search(r"(?:de|desde)\s+(.+?)\s+(?:a|hasta)\s+(.+?)(?:\s*,|\s*$)", t)
+    if patron:
+        origen = normalizar_destino(patron.group(1))
+        destino = normalizar_destino(patron.group(2))
+        if origen and destino and origen != destino:
+            return origen, destino
+    return None, None
 
 
 def _quiere_comprar(t: str) -> bool:
