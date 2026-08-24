@@ -25,7 +25,13 @@ class MensajeSalida:
 
 @dataclass
 class Perfil:
-    """Contexto persistido por usuario. Clave = chat_id, valor = este JSON."""
+    """Contexto persistido por usuario. Clave = chat_id, valor = este JSON.
+
+    Capas de memoria:
+      - Perfil: persiste indefinidamente (presupuesto, destino, pasajeros, viajes guardados).
+      - Historial: expira después de 48 horas (últimos 20 turnos de conversación).
+      - ultima_conexion: timestamp del último mensaje para detectar expiración de sesión.
+    """
 
     chat_id: str
     origen: Optional[str] = None
@@ -44,7 +50,10 @@ class Perfil:
     aerolinea: Optional[str] = None
     viajes_guardados: list[dict] = field(default_factory=list)
     timestamps: list[str] = field(default_factory=list)
+    # Historial de conversación (últimos 20 turnos, expira tras 48h)
     historial: list[dict] = field(default_factory=list)
+    # Timestamp de último mensaje (para detectar expiración de sesión)
+    ultima_conexion: Optional[str] = None
 
     def to_dict(self) -> dict:
         return asdict(self)
