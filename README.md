@@ -25,16 +25,19 @@ telegram/WhatsApp ──> adaptador (parse) ──> Orquestador ──> intérpr
 - **Intención:** primero intenta el LLM (`llm_router` con Gemini/Groq/DeepSeek
   en cascada, gratis) y, si no responde, cae a una heurística local. El prompt
   del LLM y la heurística están en `app/intents.py`.
+- **Historial:** el bot mantiene los últimos 20 turnos de conversación por
+  usuario, permitiendo multi-turno real (el LLM recuerda presupuesto, destino
+  y contexto anterior).
 - **Vuelos:** usa `fast-flights` (Google Flights, gratis). Si la red falla o el
   destino no tiene código IATA (islas del Pacífico, pueblos sin aeropuerto),
   cae a un simulador interno de precios realistas.
-- **Persistencia:** perfil por chat (presupuesto, pasajeros, viajes guardados)
-  en Upstash Redis vía REST; si no hay credenciales, memoria local.
+- **Persistencia:** perfil por chat (presupuesto, pasajeros, historial, viajes
+  guardados) en Upstash Redis vía REST; si no hay credenciales, memoria local.
 
 ## Requisitos
 
-- Python 3.10+
-- Dependencias: `pip install -r requirements.txt` (o `uv sync` si usas uv)
+- Python 3.12+
+- Dependencias: `uv sync` (o `pip install .`)
 - `.env` a partir de `.env.example`
 
 ## Puesta en marcha
@@ -63,21 +66,26 @@ El adaptador (`app/adapters/whatsapp.py`) ya está listo y el webhook
    (gratis) o agrega tu número real. Anota el **Phone number ID**.
 3. **Crea un token permanente:** en "API Setup" → "Generate token". Ese es el
    `WHATSAPP_TOKEN`. Asegúrate de que dure más de 24 h (marca "Permanent").
-4. **Añade al número de prueba como usuario de test:** para que la demo pueda
-   escribirle al bot. Ese número va en `WHATSAPP_BUSINESS_PHONE`.
-5. **Configura en el servidor** (Render → Environment):
+4. **Registra tu número de negocio:** en "Paso 3: Verificación del negocio"
+   del wizard de WhatsApp, registra y verifica tu número por SMS/llamada.
+5. **Vincula la App con la WABA:** ejecuta en Graph API Explorer:
+   ```
+   POST /{WABA_ID}/subscribed_apps
+   ```
+   Con permisos: `whatsapp_business_management`, `whatsapp_business_messaging`.
+6. **Configura en el servidor** (Render → Environment):
    ```
    WHATSAPP_TOKEN=...
    WHATSAPP_PHONE_NUMBER_ID=...
    WHATSAPP_BUSINESS_PHONE=57...   # tu celular, con código de país
    WHATSAPP_VERIFY_TOKEN=vuelos-demo-2026  # cualquier secreto que elijas
    ```
-6. **Registra el webhook en Meta:** WhatsApp → "Configuration" → "Edit" →
+7. **Registra el webhook en Meta:** WhatsApp → "Configuration" → "Edit" →
    Callback URL: `https://<tu-dominio>/webhook/whatsapp` y Verify token:
    `vuelos-demo-2026` (el mismo de arriba). Meta hará un GET y el bot responde
    el challenge automáticamente. En "Webhook fields" marca **messages**.
-7. **Prueba:** desde tu celular (el `WHATSAPP_BUSINESS_PHONE`), escribe al
-   número de prueba: *"tengo 2 millones, busca a san andres"*.
+8. **Prueba:** desde tu celular, escribe al número de Business:
+   *"tengo 2 millones, busca a san andres"*.
 
 Notas de la demo:
 - Los mensajes salientes se envían dentro de la **ventana de 24 h** (no se usan
@@ -112,6 +120,7 @@ muestra link.
 ```
 app/
   main.py            # FastAPI: webhooks de Telegram y WhatsApp + /diagnostico
+  config.py          # Carga de variables de entorno
   orchestrator.py    # máquina de estados de la conversación (despacho por intención)
   intents.py         # intérprete: prompt LLM + heurística de respaldo
   flight_client.py   # precios Google Flights (fast-flights) + simulador
@@ -122,15 +131,18 @@ app/
   models.py          # MensajeEntrada/Salida, Perfil (contexto por usuario)
   profile_store.py   # Upstash Redis REST o memoria local
   llm_router.py      # cascada Gemini → Groq → DeepSeek → fallback
+  llm_providers/     # implementaciones de cada proveedor LLM
+    base.py          # interfaz ProveedorLLM + helper OpenAI-compatible
+    gemini.py        # Google Gemini (free tier)
+    groq.py          # Groq (free tier)
+    deepseek.py      # DeepSeek (económico)
   adapters/
+    base.py          # Protocol CanalAdapter
     telegram.py      # canal Telegram (texto + foto + teclado)
     whatsapp.py      # canal WhatsApp Cloud API (texto + foto + verificación)
 ```
 
 ## Roadmap
 
-- **Intérprete 100% LLM:** hoy la heurística de `intents.py` crece con cada
-  frase nueva. El plan es que el LLM (ya es el primer intento) sea la única
-  vía y la heurística quede solo como fallback de emergencia sin internet.
 - **Compra real:** hoy se resuelve con el link de Google Flights. Un siguiente
   paso sería plantillas de WhatsApp para reservas fuera de la ventana de 24 h.
