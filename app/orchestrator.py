@@ -10,21 +10,20 @@ from app.destinos import normalizar_destino
 from app.flight_client import FlightClient, OpcionVuelo
 from app.formatter import formatear_opciones
 from app.fotos import foto_destino
-from app.intents import Interpretador
+from app.intents import Interpretador, Intencion, ResultadoInterpretacion
 from app.links import link_google_flights
 from app.models import MensajeEntrada, MensajeSalida, Perfil
 from app.profile_store import ProfileStore
 
 log = logging.getLogger(__name__)
 
-PRESUPUESTO_RE = re.compile(
-    r"(?P<cant>[0-9][0-9.,]*)\s*(?:usd|dolares|dólares|euros|pesos|\$)", re.I
-)
+_EXPIRA_HORAS = 48  # horas antes de limpiar el historial de conversación
 
 _SYSTEM_PERSONA = (
     "Eres 'Asistente Vuelos', un asistente amigable de búsqueda de vuelos para una persona común, "
     "quizás mayor de 60 años. Responde corto, cálido, en español, sin tablas complicadas y sin "
-    "datos inventados sobre precios exactos (puedes hablar de rangos aproximados)."
+    "datos inventados sobre precios exactos (puedes hablar de rangos aproximados). "
+    "Si el usuario menciona un destino, presupuesto o fecha en el perfil, úsalos para responder."
 )
 
 
@@ -35,8 +34,11 @@ class Sender:
 class Orquestador:
     """Centro de la conversación. Canal-agnóstico.
 
-    El entendimiento del texto libre lo hace el Interpretador (LLM, con
-    heurística local de respaldo). El orquestador solo despacha la Intencion.
+    Arquitectura:
+      - LLM extrae intención (con historial y perfil)
+      - Orquestador despacha por acción
+      - Sesión expira tras 48 horas (historial se limpia, perfil se mantiene)
+      - Soporta múltiples intenciones por mensaje
     """
 
     def __init__(self, store: Optional[ProfileStore] = None) -> None:
@@ -46,103 +48,86 @@ class Orquestador:
 
     async def procesar(self, mensaje: MensajeEntrada, sender: Sender) -> None:
         perfil = await self.store.leer(mensaje.chat_id, mensaje.canal)
+
+        # Verificar si la sesión sigue activa
+        sesion_activa = _verificar_sesion(perfil.ultima_conexion)
+        if not sesion_activa and perfil.historial:
+            log.info("Sesión expirada para %s, historial limpiado", mensaje.chat_id)
+            perfil.historial = []
+
+        # Actualizar timestamp de última conexión
+        perfil.ultima_conexion = _ahora()
         perfil.timestamps.append(_ahora())
         if len(perfil.timestamps) > 50:
             perfil.timestamps = perfil.timestamps[-50:]
-        if self._inferir_perfil(mensaje, perfil):
-            await self.store.guardar(perfil, mensaje.canal)
-        salida = await self._construir_respuesta(mensaje, perfil)
-        perfil.historial.append({"role": "user", "content": mensaje.texto})
-        perfil.historial.append({"role": "assistant", "content": salida.texto})
-        if len(perfil.historial) > 20:
-            perfil.historial = perfil.historial[-20:]
-        await self.store.guardar(perfil, mensaje.canal)
-        await sender.enviar(mensaje.chat_id, salida)
 
-    # --- inferencia implícita del perfil --------------------------------
-
-    def _inferir_perfil(self, m: MensajeEntrada, p: Perfil) -> bool:
-        """Guarda datos que el usuario 'suelta' sin preguntar."""
-        cambio = False
-
-        monto = _extraer_monto(m.texto)
-        if monto and monto != p.presupuesto:
-            p.presupuesto = monto
-            p.moneda = _detectar_moneda(m.texto)
-            cambio = True
-
-        if not monto:
-            millon = re.search(
-                r"(?:(\d[\d.,]*)\s*|un\s*|una\s*)?millon(?:es)?", m.texto.lower()
-            )
-            if millon:
-                cantidad = millon.group(1)
-                p.presupuesto = (int(cantidad.replace(".", "").replace(",", "")) if cantidad else 1) * 1_000_000
-                p.moneda = "COP"
-                cambio = True
-            else:
-                mil = re.search(r"(\d[\d.,]*)\s*mil", m.texto.lower())
-                if mil:
-                    p.presupuesto = int(mil.group(1).replace(".", "").replace(",", "")) * 1000
-                    p.moneda = "COP"
-                    cambio = True
-
-        # origen marcado explícitamente ("desde Bogotá", "salgo de X")
-        if _marcador_origen(m.texto):
-            ciudad = normalizar_destino(m.texto)
-            if ciudad and ciudad != p.origen:
-                p.origen = ciudad
-                cambio = True
-
-        if p.origen is None and m.ubicacion:
-            pass  # TODO: reverse-geocode lat/long
-        return cambio
-
-    # --- construcción de la respuesta -----------------------------------
-
-    async def _construir_respuesta(self, m: MensajeEntrada, p: Perfil) -> MensajeSalida:
-        t = m.texto.strip()
-
-        if p.esperando == "presupuesto" and p.presupuesto is not None:
-            p.esperando = None
-            await self.store.guardar(p, m.canal)
-            return MensajeSalida(
-                f"Perfecto, quedó en {_moneda(p.presupuesto)}. ¿Hacia dónde quieres ir?",
-                opciones=["Busca para este presupuesto"],
-            )
-
-        intent = await self.interprete.interpretar(
-            t, opciones_recientes=p.opciones_recientes,
-            presupuesto_actual=p.presupuesto, historial=p.historial,
+        # LLM extrae intención con contexto completo
+        perfil_dict = perfil.to_dict()
+        resultado = await self.interprete.interpretar(
+            mensaje.texto,
+            opciones_recientes=perfil.opciones_recientes,
+            presupuesto_actual=perfil.presupuesto,
+            historial=perfil.historial if sesion_activa else [],
+            perfil_actual=perfil_dict,
         )
 
-        # "si/ok/dale" después de "¿Busco opciones?" -> ejecuta la búsqueda
-        if _es_afirmacion(t):
-            ultima_fecha = p.opciones_recientes[0].get("fecha") if p.opciones_recientes else None
-            if p.destino:
-                return await self._respuesta_destino(p, m, p.destino, fecha=ultima_fecha)
-            return await self._respuesta_buscar(p, m, fecha=ultima_fecha)
+        # Mostrar mensaje de clarificación si el LLM lo pidió
+        if resultado.mensaje_clarificacion:
+            await sender.enviar(mensaje.chat_id, MensajeSalida(resultado.mensaje_clarificacion))
+            return
 
-        # "somos 2" siempre se aplica, incluso dentro de otra petición
-        if intent.pasajeros and intent.accion not in ("pasajeros", "saludo", "ayuda", "guardar_viaje"):
-            if intent.pasajeros != p.pasajeros:
-                p.pasajeros = max(1, intent.pasajeros)
-                await self.store.guardar(p, m.canal)
+        # Procesar cada intención
+        respuestas = []
+        for intent in resultado.intenciones:
+            resp = await self._dispatch(intent, mensaje, perfil)
+            if resp:
+                respuestas.append(resp)
+
+        # Guardar historial
+        perfil.historial.append({"role": "user", "content": mensaje.texto})
+        for r in respuestas:
+            perfil.historial.append({"role": "assistant", "content": r.texto})
+        if len(perfil.historial) > 20:
+            perfil.historial = perfil.historial[-20:]
+
+        await self.store.guardar(perfil, mensaje.canal)
+
+        for r in respuestas:
+            await sender.enviar(mensaje.chat_id, r)
+
+    async def _dispatch(
+        self, intent: Intencion, m: MensajeEntrada, p: Perfil
+    ) -> Optional[MensajeSalida]:
+        """Despacha una intención a la respuesta correspondiente."""
+
+        if intent.accion == "olvidar_todo":
+            return await self._respuesta_olvidar_todo(m, p)
 
         if intent.accion == "saludo":
+            if p.presupuesto and p.destino:
+                return MensajeSalida(
+                    f"¡Hola! Veo que estabas buscando vuelos a *{p.destino}* "
+                    f"con {_moneda(p.presupuesto)}. ¿Quieres que siga buscando o algo nuevo?"
+                )
             return MensajeSalida(
                 "¡Hola! Soy tu asistente de vuelos ✈️. Cuéntame con cuánto cuentas "
                 "y hacia dónde quieres ir."
             )
+
         if intent.accion == "ayuda":
             return MensajeSalida(
                 "Te ayudo a encontrar vuelos. Puedes decirme:\n"
                 "• 'busca barato para 600 mil desde Bogotá'\n"
                 "• 'la opción 2' o el nombre de una ciudad\n"
                 "• 'lo más económico en 3 meses'\n"
-                "• 'somos 2 personas'\n\n"
+                "• 'somos 2 personas'\n"
+                "• 'olvida todo' para empezar de cero\n\n"
                 "Sin formularios, voy entendiendo poco a poco."
             )
+
+        if intent.accion == "actualizar_perfil":
+            return await self._respuesta_actualizar_perfil(intent, m, p)
+
         if intent.accion == "cambiar_presupuesto":
             p.esperando = "presupuesto"
             await self.store.guardar(p, m.canal)
@@ -184,19 +169,83 @@ class Orquestador:
             return await self._respuesta_opcion(p, m, intent.numero)
 
         if intent.accion == "elegir_destino" and intent.destino:
-            return await self._respuesta_destino(p, m, intent.destino, fecha=intent.fecha, aerolinea=intent.aerolinea)
+            # Actualizar perfil con datos del LLM
+            if intent.presupuesto and intent.moneda:
+                p.presupuesto = intent.presupuesto
+                p.moneda = intent.moneda
+            if intent.pasajeros:
+                p.pasajeros = max(1, intent.pasajeros)
+            return await self._respuesta_destino(
+                p, m, intent.destino, fecha=intent.fecha, aerolinea=intent.aerolinea,
+            )
 
         if intent.accion == "rango" and intent.rango_meses:
+            if intent.presupuesto and intent.moneda:
+                p.presupuesto = intent.presupuesto
+                p.moneda = intent.moneda
             return await self._respuesta_rango(p, m, intent.rango_meses, aerolinea=intent.aerolinea)
 
         if intent.accion == "buscar":
+            if intent.presupuesto and intent.moneda:
+                p.presupuesto = intent.presupuesto
+                p.moneda = intent.moneda
+            if intent.pasajeros:
+                p.pasajeros = max(1, intent.pasajeros)
             if intent.destino:
-                return await self._respuesta_destino(p, m, intent.destino, fecha=intent.fecha, aerolinea=intent.aerolinea)
+                return await self._respuesta_destino(
+                    p, m, intent.destino, fecha=intent.fecha, aerolinea=intent.aerolinea,
+                )
             return await self._respuesta_buscar(p, m, fecha=intent.fecha, aerolinea=intent.aerolinea)
 
         return await self._respuesta_conversacion(m, p)
 
     # --- respuestas concretas -------------------------------------------
+
+    async def _respuesta_olvidar_todo(self, m: MensajeEntrada, p: Perfil) -> MensajeSalida:
+        """Resetea todo el perfil y historial del usuario."""
+        p.origen = None
+        p.destino = None
+        p.presupuesto = None
+        p.moneda = None
+        p.pasajeros = 1
+        p.aerolinea = None
+        p.opciones_recientes = []
+        p.viajes_guardados = []
+        p.historial = []
+        p.esperando = None
+        p.ultimo_destino_sugerido = None
+        await self.store.guardar(p, m.canal)
+        return MensajeSalida(
+            "Listo, empezamos de cero. Cuéntame: ¿hacia dónde quieres ir y con cuánto presupuesto?"
+        )
+
+    async def _respuesta_actualizar_perfil(
+        self, intent: Intencion, m: MensajeEntrada, p: Perfil
+    ) -> MensajeSalida:
+        """Actualiza un campo del perfil (cambio de parecer)."""
+        campo = intent.campo_actualizado
+        if campo == "destino" and intent.destino:
+            p.destino = intent.destino
+            await self.store.guardar(p, m.canal)
+            if p.presupuesto:
+                return await self._respuesta_destino(p, m, intent.destino)
+            return MensajeSalida(
+                f"Perfecto, cambiado a *{intent.destino}*. ¿Con cuánto presupuesto cuentas?"
+            )
+        if campo == "presupuesto" and intent.presupuesto:
+            p.presupuesto = intent.presupuesto
+            p.moneda = intent.moneda or "COP"
+            await self.store.guardar(p, m.canal)
+            return MensajeSalida(
+                f"Presupuesto actualizado a {_moneda(p.presupuesto)}. ¿Hacia dónde quieres ir?"
+            )
+        if campo == "pasajeros" and intent.pasajeros:
+            p.pasajeros = max(1, intent.pasajeros)
+            await self.store.guardar(p, m.canal)
+            return MensajeSalida(
+                f"Anotado, {p.pasajeros} pasajeros. ¿Busco opciones?"
+            )
+        return MensajeSalida("¿Qué te gustaría cambiar? Puedo actualizar destino, presupuesto o pasajeros.")
 
     async def _respuesta_buscar(
         self, p: Perfil, m: MensajeEntrada, fecha: Optional[str] = None,
@@ -311,7 +360,8 @@ class Orquestador:
     async def _respuesta_conversacion(self, m: MensajeEntrada, p: Perfil) -> MensajeSalida:
         contexto = (
             f"Perfil: presupuesto={p.presupuesto}, moneda={p.moneda}, origen={p.origen or 'desconocido'}, "
-            f"pasajeros={p.pasajeros}. Mensaje del usuario: {m.texto}"
+            f"pasajeros={p.pasajeros}, destino={p.destino or 'ninguno'}. "
+            f"Mensaje del usuario: {m.texto}"
         )
         texto, proveedor = await llm_router.generar(
             _SYSTEM_PERSONA, contexto, historial=p.historial,
@@ -324,9 +374,7 @@ class Orquestador:
                 f"Con {_moneda(p.presupuesto)} desde {p.origen or 'tu ciudad'} ya te puedo buscar destinos.",
                 opciones=["Busca para este presupuesto", "Cambiar presupuesto"],
             )
-        if re.search(r"vuelo|viajar|viaje|barato", m.texto.lower()):
-            return MensajeSalida("Genial, dime tu presupuesto (ej. '200 dólares') y te doy opciones.")
-        return MensajeSalida("Te leo 😊. Escribe /help para ver cómo puedo ayudarte.")
+        return MensajeSalida("Te leo 😊. Escribe 'ayuda' para ver cómo puedo ayudarte.")
 
     # --- cómo mostrar opciones -----------------------------------------
 
@@ -356,54 +404,21 @@ def _bruto(o: OpcionVuelo) -> dict:
     }
 
 
-_AFIRMACIONES = {
-    "si", "sí", "ok", "okey", "dale", "sale", "bueno", "vamos", "claro",
-    "sip", "si claro", "sí claro", "afirma", "obvio", "siguiente", "prosigo",
-}
-
-
-def _es_afirmacion(t: str) -> bool:
-    return t.strip().lower() in _AFIRMACIONES
-
-
-def _marcador_origen(texto: str) -> bool:
-    t = texto.lower()
-    return any(m in t for m in ("desde", "salgo de", "me voy de", "parto de", "saliendo de"))
-
-
-def _extraer_monto(texto: str) -> Optional[int]:
-    m = PRESUPUESTO_RE.search(texto)
-    return _limpio(m.group("cant")) if m else None
-
-
-def _limpio(s: str) -> Optional[int]:
+def _verificar_sesion(ultima_conexion: Optional[str]) -> bool:
+    """Retorna True si la sesión sigue activa (< 48 horas)."""
+    if not ultima_conexion:
+        return False
     try:
-        return int(s.replace(".", "").replace(",", ""))
-    except (ValueError, AttributeError):
-        return None
-
-
-def _detectar_moneda(texto: str) -> str:
-    t = texto.lower()
-    if "dolar" in t or "usd" in t or "$" in t:
-        return "USD"
-    if "euro" in t:
-        return "EUR"
-    if "peso" in t or "mil" in t:
-        return "COP"
-    return "COP"
+        ultima = datetime.datetime.fromisoformat(ultima_conexion)
+        ahora = datetime.datetime.now(datetime.timezone.utc)
+        horas = (ahora - ultima).total_seconds() / 3600
+        return horas < _EXPIRA_HORAS
+    except (ValueError, TypeError):
+        return False
 
 
 def _moneda(numero: int) -> str:
     return f"${numero:,.0f}".replace(",", ".")
-
-
-def _describir_presupuesto(p: Perfil) -> str:
-    moneda = p.moneda or "COP"
-    if moneda == "COP":
-        usd = round(p.presupuesto / 4000) if p.presupuesto else 0
-        return f"{p.presupuesto:,} pesos colombianos (COP), aproximadamente ${usd} dólares"
-    return f"{p.presupuesto:,} {moneda}"
 
 
 def _a_cop(monto: int, moneda: Optional[str]) -> int:
