@@ -11,6 +11,8 @@ Desviación documentada del prompt maestro: NormalizedSlots incluye
 `intent_hint` y RawSlots incluye `numero_opcion` para que el dataset dorado
 pueda verificar comandos ("reset", "chitchat", "la 2") de forma stateless.
 `numero_opcion` se llena siempre por vía determinista (nunca la inventa el LLM).
+El hint "buy" ("lo quiero", "dame el link") reconecta el flujo de compra
+con link a Google Flights que tenía el pipeline legacy.
 """
 from __future__ import annotations
 
@@ -18,7 +20,7 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
-IntentHint = Literal["search", "reset", "chitchat", "select_option", "change"]
+IntentHint = Literal["search", "reset", "chitchat", "select_option", "change", "buy"]
 
 
 class RawSlots(BaseModel):

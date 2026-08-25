@@ -71,6 +71,8 @@ class DialogueManager:
             salida = await self.executor.chitchat(texto, estado)
         elif decision.accion == "select_option":
             salida = await self.executor.seleccionar(decision.numero_opcion, estado)
+        elif decision.accion == "comprar":
+            salida = await self.executor.comprar(decision.numero_opcion, estado)
         else:  # search / search_rango
             estado.pending_question = None
             salida = await self.executor.buscar(decision.slots, estado)

@@ -271,6 +271,33 @@ Decisiones de diseño tomadas durante la ejecución (desviaciones documentadas):
 5. `Perfil` v1 y sus métodos de store permanecen como esquema deprecado para no romper datos viejos en Redis; la clave nueva `estado:*` convive sin colisión.
 6. Pendiente fuera de alcance: compra real dentro del chat (hoy link a Google Flights), plantillas WhatsApp fuera de ventana 24h, tasas de cambio vía API (siguen fijas 4000/4400), TTL para claves v1 huérfanas.
 
+### 4.2 Hotfix post-primer deploy (2026-08-25)
+
+La primera prueba E2E real en WhatsApp destapó 3 fallos que los tests con
+store en memoria no podían ver:
+
+1. **Upstash: sintaxis de SET inválida (crítico).** `POST /set/{key}/ex/{ttl}`
+   con el JSON en el body produce `SET key ex ttl <json>` (el body se agrega
+   como ÚLTIMO parámetro según la doc oficial) -> `ERR syntax error` que el
+   código no revisaba -> **el estado nunca se persistía en producción** y
+   cada turno arrancaba de cero ("la 1" -> "No tengo esa opción", chitchat
+   amnésico). Corregido: `POST /set/{key}?EX={ttl}` + body; errores de
+   Upstash (`{"error": ...}`) ahora se registran a nivel ERROR. `borrar`
+   usaba `/delete/` cuando el comando Redis es `DEL` -> `/del/{key}`.
+   Cobertura nueva: `tests/test_profile_store.py` con `httpx.MockTransport`
+   verificando el wire format exacto.
+2. **Intención de compra perdida en el refactor.** El hint `buy` no existía
+   y `links.py` quedó huérfano: "dame el link para comprar" caía a chitchat y
+   el LLM negaba la capacidad. Reconectado: hint `buy` (vocabulario
+   determinista + prompt), acción `comprar` en SlotManager/DialogueManager y
+   `ActionExecutor.comprar()` que responde con el enlace de Google Flights,
+   fecha y precio de la opción elegida (`lo quiero`, `dame el link de la 2`).
+3. **Persona de chitchat** actualizada para que el LLM no niegue capacidades
+   que el bot sí tiene (orienta a "lo quiero" tras una búsqueda).
+
+Lección: los tests de store deben verificar el protocolo de red (MockTransport),
+no solo la semántica en memoria; un 200 de Upstash puede traer `{"error": ...}`.
+
 ---
 
 ## 5. ¿Es un proyecto muy complejo sin arquitectura principal? ¿Hay que guiarlo más?

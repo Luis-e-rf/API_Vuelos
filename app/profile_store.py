@@ -33,11 +33,16 @@ class ProfileStore:
         self,
         url: str = UPSTASH_REDIS_REST_URL,
         token: str = UPSTASH_REDIS_REST_TOKEN,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self.url = url
         self.token = token
+        self._transport = transport  # inyectable para tests (MockTransport)
         self._cache: dict[str, Perfil | UserState] = {}
         self._redis = bool(url and token)
+
+    def _cliente(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(timeout=5, transport=self._transport)
 
     def _key(self, chat_id: str, canal: str) -> str:
         return f"perfil:{canal}:{chat_id}"
@@ -96,12 +101,15 @@ class ProfileStore:
         if not self._redis:
             return self._cache.get(key) or UserState()
         try:
-            async with httpx.AsyncClient(timeout=5) as client:
+            async with self._cliente() as client:
                 r = await client.get(
                     f"{self.url}/get/{key}",
                     headers={"Authorization": f"Bearer {self.token}"},
                 )
                 data = r.json()
+            if "error" in data:
+                log.error("Redis leer_estado rechazado para %s: %s", key, data["error"])
+                return UserState()
             if data.get("result"):
                 return UserState.from_dict(json.loads(data["result"]))
         except Exception as exc:  # noqa: BLE001 - no romper el flujo del bot
@@ -111,39 +119,55 @@ class ProfileStore:
     async def guardar_estado(self, estado: UserState, chat_id: str, canal: str = "unknown") -> None:
         """Persiste el UserState v2 con TTL de 30 días.
 
-        El JSON va en el cuerpo del POST (/set/{key}/ex/{ttl}), no en la
-        URL: valores con tildes, espacios o '/' no corrompen la clave.
+        Sintaxis Upstash verificada contra su doc oficial: el body del POST
+        se agrega como ÚLTIMO parámetro del comando, así que los modifiers
+        (EX) van como QUERY PARAMS: POST /set/{key}?EX={ttl} + body=valor.
+        Escribir /set/{key}/ex/{ttl} con body produce
+        `SET key ex ttl <json>` -> ERR syntax error (fallo silencioso).
         """
         key = self._key_estado(chat_id, canal)
         if not self._redis:
             self._cache[key] = estado
             return
         try:
-            async with httpx.AsyncClient(timeout=5) as client:
-                await client.post(
-                    f"{self.url}/set/{key}/ex/{_TTL_ESTADO_SEG}",
+            async with self._cliente() as client:
+                r = await client.post(
+                    f"{self.url}/set/{key}",
+                    params={"EX": _TTL_ESTADO_SEG},
                     content=json.dumps(estado.to_dict()),
                     headers={
                         "Authorization": f"Bearer {self.token}",
                         "Content-Type": "text/plain",
                     },
                 )
+            data = r.json()
+            if "error" in data:
+                log.error("Redis guardar_estado rechazado para %s: %s", key, data["error"])
+            elif data.get("result") != "OK":
+                log.error("Redis guardar_estado respuesta inesperada para %s: %s", key, data)
         except Exception as exc:  # noqa: BLE001
-            log.warning("Redis guardar_estado falló para %s: %s", key, exc)
+            log.error("Redis guardar_estado falló para %s: %s", key, exc)
 
     async def borrar(self, chat_id: str, canal: str = "unknown") -> bool:
-        """Elimina la clave del estado (reset real, no mutación parcial)."""
+        """Elimina la clave del estado (reset real, no mutación parcial).
+
+        El comando Redis es DEL (no DELETE): /del/{key}.
+        """
         key = self._key_estado(chat_id, canal)
         self._cache.pop(key, None)
         if not self._redis:
             return True
         try:
-            async with httpx.AsyncClient(timeout=5) as client:
+            async with self._cliente() as client:
                 r = await client.get(
-                    f"{self.url}/delete/{key}",
+                    f"{self.url}/del/{key}",
                     headers={"Authorization": f"Bearer {self.token}"},
                 )
-            return bool(r.json().get("result"))
+            data = r.json()
+            if "error" in data:
+                log.error("Redis borrar rechazado para %s: %s", key, data["error"])
+                return False
+            return bool(data.get("result"))
         except Exception as exc:  # noqa: BLE001
-            log.warning("Redis borrar falló para %s: %s", key, exc)
+            log.error("Redis borrar falló para %s: %s", key, exc)
             return False

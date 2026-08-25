@@ -15,6 +15,7 @@ from app.dialogue.slot_manager import PREGUNTAS
 from app.flight_client import FlightClient, OpcionVuelo
 from app.fotos import foto_destino
 from app.formatter import formatear_opciones
+from app.links import link_google_flights
 from app.models import MensajeSalida, UserState
 
 log = logging.getLogger(__name__)
@@ -22,7 +23,9 @@ log = logging.getLogger(__name__)
 _PERSONA_CHITCHAT = (
     "Eres 'Asistente Vuelos', cálido y breve, en español. Solo charla; "
     "no inventes precios ni datos de vuelos. Si preguntan por vuelos, "
-    "invita amablemente a decir destino y presupuesto."
+    "invita amablemente a decir destino y presupuesto. Si piden comprar o "
+    "el link, explica que primero te muestre opciones y luego diga "
+    "'lo quiero' y le darás el enlace de Google Flights."
 )
 
 _PLANTILLAS_OFFLINE = (
@@ -39,6 +42,11 @@ def _bruto(o: OpcionVuelo) -> dict:
         "precio_cop": o.precio_cop,
         "aerolinea": o.aerolinea,
     }
+
+
+def _cop_legible(numero: int) -> str:
+    """864000 -> '$864.000' (formato colombiano)."""
+    return f"${numero:,.0f}".replace(",", ".")
 
 
 class ActionExecutor:
@@ -102,6 +110,41 @@ class ActionExecutor:
         if not slots.presupuesto_cop:
             return MensajeSalida(PREGUNTAS["presupuesto"])
         return await self.buscar(slots, estado)
+
+    async def comprar(self, numero: int | None, estado: UserState) -> MensajeSalida:
+        """'lo quiero' / 'dame el link' -> enlace de Google Flights.
+
+        Sin numero explícito usa la primera opción de la última búsqueda
+        ('la 2' antes del link selecciona esa posición).
+        """
+        recientes = estado.opciones_recientes
+        if not recientes:
+            return MensajeSalida(
+                "Aún no te he mostrado ningún vuelo ✈️. Pídeme que busque opciones "
+                "(ej: 'de Bogotá a San Andrés con un palo') y luego dime 'lo quiero'."
+            )
+        indice = 0
+        if numero and 1 <= numero <= len(recientes):
+            indice = numero - 1
+        eleccion = recientes[indice]
+        destino = eleccion.get("destino")
+        fecha = eleccion.get("fecha") or ""
+        origen = estado.slots.origen or "Bogota"
+        link = link_google_flights(origen, destino, fecha)
+        if not link:
+            return MensajeSalida(
+                f"Para *{destino}* no tengo enlace de compra (no tiene aeropuerto "
+                "comercial). ¿Buscamos otro destino?"
+            )
+        fecha_txt = f"📅 {fecha}\n" if fecha else ""
+        precio = _cop_legible(eleccion.get("precio_cop", 0))
+        return MensajeSalida(
+            f"¡Claro! ✈️ Este es tu vuelo a *{destino}*:\n\n"
+            f"{fecha_txt}💰 {precio} COP\n\n"
+            f"🔗 {link}\n\n"
+            "Ahí eliges horario y pagas directo en Google Flights 😉",
+            opciones=["Busca más opciones", "Cambiar presupuesto"],
+        )
 
     async def chitchat(self, texto: str, estado: UserState) -> MensajeSalida:
         """NLG de charla: LLM solo para tono; plantillas si no hay proveedor."""

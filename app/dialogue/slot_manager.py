@@ -18,7 +18,7 @@ from app.nlu.composicion import componer
 from app.nlu.schemas import NormalizedSlots, RawSlots
 
 Accion = Literal[
-    "search", "search_rango", "ask_slot", "chitchat", "select_option", "reset"
+    "search", "search_rango", "ask_slot", "chitchat", "select_option", "comprar", "reset"
 ]
 
 MIN_PRESUPUESTO_COP = 50_000
@@ -62,6 +62,9 @@ class SlotManager:
 
         if hint == "reset":
             return Decision("reset", merged)
+
+        if hint == "buy":
+            return Decision("comprar", merged, numero_opcion=raw.numero_opcion)
 
         if hint == "select_option" and raw.numero_opcion:
             return Decision("select_option", merged, numero_opcion=raw.numero_opcion)

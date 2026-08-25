@@ -186,6 +186,40 @@ class TestOtrosFlujos:
         assert flight.llamadas[0]["presupuesto_cop"] == 1_000_000
 
 
+# --- compra (link Google Flights) ---------------------------------------------------
+
+
+class TestCompra:
+    async def test_lo_quiero_da_link_tras_busqueda(self):
+        _, flight, manager = _nuevo()
+        await _turno(manager, "desde bogota")
+        await _turno(manager, "a san andres con un palo")
+        salida = await _turno(manager, "lo quiero")
+        assert "google.com/travel/flights" in salida.texto
+        assert "San Andres" in salida.texto
+        assert "$1.950.000" in salida.texto  # precio de la primera opción
+
+    async def test_dame_el_link_de_la_2(self):
+        _, flight, manager = _nuevo()
+        await _turno(manager, "desde bogota")
+        await _turno(manager, "a san andres con un palo")
+        salida = await _turno(manager, "dame el link de la 2")
+        assert "2027-01-16" in salida.texto  # fecha de la opción 2 (Avianca)
+
+    async def test_comprar_sin_opciones_invita_a_buscar(self):
+        _, _, manager = _nuevo()
+        salida = await _turno(manager, "dame el link para comprar")
+        assert "busque" in salida.texto.lower() or "búsqueda" in salida.texto.lower()
+
+    async def test_comprar_no_llama_a_vuelos(self):
+        _, flight, manager = _nuevo()
+        await _turno(manager, "desde bogota")
+        await _turno(manager, "a san andres con un palo")
+        antes = len(flight.llamadas)
+        await _turno(manager, "lo quiero")
+        assert len(flight.llamadas) == antes  # el link no re-consulta Google
+
+
 # --- persistencia v2 -----------------------------------------------------------------
 
 

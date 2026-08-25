@@ -61,6 +61,25 @@ class TestDeterminista:
     async def test_hints(self, texto, hint):
         assert Extractor.determinista(texto).intent_hint == hint
 
+    @pytest.mark.parametrize("texto", [
+        "me puedes dar el link para comprar el tiquete?",
+        "lo quiero", "dame el link", "quiero comprar el vuelo",
+        "cómo hago para reservar",
+    ])
+    async def test_hint_compra(self, texto):
+        assert Extractor.determinista(texto).intent_hint == "buy"
+
+    async def test_negacion_de_compra_no_es_buy(self):
+        assert Extractor.determinista("no lo quiero, mejor a cartagena").intent_hint == "change"
+
+    async def test_buscar_no_se_confunde_con_compra(self):
+        assert Extractor.determinista("quiero ir a cartagena").intent_hint == "search"
+
+    async def test_compra_con_numero_de_opcion(self):
+        raw = Extractor.determinista("dame el link de la 2")
+        assert raw.intent_hint == "buy"
+        assert raw.numero_opcion == 2
+
     async def test_vacio(self):
         raw = await Extractor().extract("   ")
         assert raw.intent_hint == "chitchat"

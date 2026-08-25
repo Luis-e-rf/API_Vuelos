@@ -38,7 +38,7 @@ _SYSTEM = (
 _PROMPT = Template("""Eres extractor de slots de un bot de vuelos. Responde SOLO JSON.
 Extrae tal cual aparece en el texto, sin normalizar ni convertir nada.
 Campos: origen_raw, destino_raw, presupuesto_raw, pasajeros_raw, fecha_raw, rango_meses_raw, intent_hint.
-intent_hint: "search" | "reset" | "chitchat" | "select_option" | "change".
+intent_hint: "search" | "reset" | "chitchat" | "select_option" | "change" | "buy".
 Ejemplo 1:
 Texto: "de Bogotá a San Andrés, 2 personas, 1 millón por persona y que sea en 2027"
 JSON: {"origen_raw":"Bogotá","destino_raw":"San Andrés","presupuesto_raw":"1 millón por persona","pasajeros_raw":"2 personas","fecha_raw":"2027","rango_meses_raw":null,"intent_hint":"search"}
@@ -53,6 +53,14 @@ VOCAB_RESET = (
     "olvida todo", "olvidar todo", "empezar de cero", "reset",
     "cancela todo", "cancelar todo", "borra todo",
 )
+VOCAB_COMPRA = (
+    "lo quiero", "quiero comprar", "comprar el tiquete", "comprar el vuelo",
+    "comprar tiquete", "compralo", "cómpralo", "dame el link", "dame el enlace",
+    "link de compra", "link para comprar", "el link", "reservar",
+    "quiero el vuelo", "como compro", "cómo compro", "adquirir",
+)
+# negaciones que NO son compra aunque contengan las frases de arriba
+_NEGACION_COMPRA = ("no lo quiero", "ya no quiero", "ni lo quiero")
 _VOCAB_CAMBIO = ("no, mejor", "no mejor", "cambie", "cambié", "en vez de",
                  "en lugar de", "mejor a ", "mejor pa ")
 _MARCADORES_ORIGEN = {"de", "desde", "del"}
@@ -98,10 +106,12 @@ def _roles_ciudades(texto: str) -> tuple[str | None, str | None]:
 
 def _hint_determinista(t: str, hay_datos: bool, hay_senales_fuertes: bool,
                        numero: int | None) -> IntentHint:
-    """Prioridad: reset > select_option (sin señales fuertes) > change >
+    """Prioridad: reset > buy > select_option (sin señales fuertes) > change >
     chitchat (cero datos) > search."""
     if any(v in t for v in VOCAB_RESET):
         return "reset"
+    if any(v in t for v in VOCAB_COMPRA) and not any(n in t for n in _NEGACION_COMPRA):
+        return "buy"
     if numero and not hay_senales_fuertes:
         return "select_option"
     if any(v in t for v in _VOCAB_CAMBIO):
@@ -225,7 +235,7 @@ def _parsear_json(respuesta: str | None) -> RawSlots | None:
     # sanear el hint ANTES de validar: un hint raro del LLM no debe
     # costarnos el resto de slots válidos del mismo JSON
     if not isinstance(datos.get("intent_hint"), str) or datos["intent_hint"] not in (
-        "search", "reset", "chitchat", "select_option", "change",
+        "search", "reset", "chitchat", "select_option", "change", "buy",
     ):
         datos["intent_hint"] = "search"
     try:
