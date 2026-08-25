@@ -19,6 +19,12 @@ import pytest
 
 from app.nlu.api import interpretar
 
+
+@pytest.fixture(autouse=True)
+def _sin_llm(monkeypatch):
+    """El dataset dorado SIEMPRE corre offline (ruta determinista)."""
+    monkeypatch.setattr("app.nlu.extractor.GEMINI_API_KEY", "")
+
 # (id, texto, campos esperados de NormalizedSlots)
 CASOS = [
     ("combo_completo", "de Bogotá a San Andrés, 2 personas, 1 millón por persona 2027",

@@ -46,6 +46,22 @@ def _periodo(t: str) -> int:
     return 15  # mes sin período: mitad por convención
 
 
+def rango_meses(raw: str) -> int | None:
+    """'en los próximos 3 meses', '3 meses siguientes' -> 1..12, o None.
+
+    Semanas no se aceptan (ambigüedad); eso lo pregunta SlotManager.
+    """
+    t = quitar_tildes(raw)
+    m = (
+        re.search(r"(?:proximos|siguientes)\s+(\d{1,2})\s*mes", t)
+        or re.search(r"(\d{1,2})\s*mes(?:es)?\s*(?:proximos|siguientes)", t)
+        or re.search(r"\ben\s+(\d{1,2})\s*mes", t)
+    )
+    if not m:
+        return None
+    return max(1, min(12, int(m.group(1))))
+
+
 def parse(raw: str, hoy: datetime.date | None = None) -> str | None:
     """Texto con fecha coloquial -> ISO 'YYYY-MM-DD' o None si no hay fecha."""
     hoy = hoy or datetime.date.today()

@@ -8,8 +8,9 @@ NormalizedSlots -> resultado de pasar RawSlots por los normalizadores
                    que consumen SlotManager y ActionExecutor.
 
 Desviación documentada del prompt maestro: NormalizedSlots incluye
-`intent_hint` para que el dataset dorado (tests/test_nlu_golden.py) pueda
-verificar comandos ("reset", "chitchat") de forma stateless.
+`intent_hint` y RawSlots incluye `numero_opcion` para que el dataset dorado
+pueda verificar comandos ("reset", "chitchat", "la 2") de forma stateless.
+`numero_opcion` se llena siempre por vía determinista (nunca la inventa el LLM).
 """
 from __future__ import annotations
 
@@ -30,6 +31,7 @@ class RawSlots(BaseModel):
     fecha_raw: Optional[str] = None         # "principios de enero 2027"
     rango_meses_raw: Optional[str] = None   # "en los próximos 3 meses"
     intent_hint: IntentHint = "search"
+    numero_opcion: Optional[int] = Field(default=None, ge=1, le=9)  # "la 2" -> 2
 
 
 class NormalizedSlots(BaseModel):
