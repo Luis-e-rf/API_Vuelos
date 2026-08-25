@@ -7,32 +7,38 @@ núcleo. Un solo backend, canales intercambiables.
 ## Cómo funciona
 
 ```
-telegram/WhatsApp ──> adaptador (parse) ──> Orquestador ──> intérprete de intención
-                                                    │
-                                                    ▼
-                              FlightClient (Google Flights o simulador)
-                                    │
-                                    ▼
-                              Formatter + foto Wikimedia + link de compra
-                                    │
-                                    ▼
-        adaptador (enviar: texto, foto y link) ──> usuario
+telegram/WhatsApp ──> adapter (parse_todos) ──> DialogueManager
+                                                     │
+                              NLU: Extractor (Gemini JSON mode o determinista) -> RawSlots
+                                                     │
+                              Normalizers (dinero/ciudad/fecha/pasajeros) -> NormalizedSlots
+                                                     │
+                              SlotManager: invariantes + ASK_SLOT | SEARCH | RESET | CHITCHAT
+                                                     │
+                              ActionExecutor -> FlightClient (Google Flights o simulador)
+                                                     │
+                              Formatter + foto Wikimedia + link de compra ──> usuario
 ```
 
 - **Canal agnóstico:** `MensajeEntrada`/`MensajeSalida` son la única interfaz
-  entre los adaptadores y el orquestador. Para agregar un canal, crea un
-  adaptador con `parse(update) -> MensajeEntrada` y `enviar(chat_id, salida)`.
-- **Intención:** primero intenta el LLM (`llm_router` con Gemini/Groq/DeepSeek
-  en cascada, gratis) y, si no responde, cae a una heurística local. El prompt
-  del LLM y la heurística están en `app/intents.py`.
-- **Historial:** el bot mantiene los últimos 20 turnos de conversación por
-  usuario, permitiendo multi-turno real (el LLM recuerda presupuesto, destino
-  y contexto anterior).
+  entre los adaptadores y el `DialogueManager`. Para agregar un canal, crea un
+  adaptador con `parse_todos(update) -> list[MensajeEntrada]` y `enviar(chat_id, salida)`.
+- **NLU por contrato:** el LLM (Gemini `gemini-flash-lite-latest` en modo JSON
+  estricto) solo extrae spans crudos (`RawSlots`: "1 millón por persona").
+  Nunca normaliza ni decide acciones. Sin API key, un extractor determinista
+  offline hace el mismo trabajo (vocabulario coloquial: "un palo", "pa san
+  andres", "somos mi esposa y yo").
+- **Normalizers puros:** `app/normalizers/` convierte dinero a COP (k/mil/
+  lucas/millón/palo/melón, USD/EUR), ciudades al catálogo IATA (sin substring
+  matching), fechas a ISO y cuenta viajeros. 100% testeables, sin LLM.
+- **SlotManager:** valida invariantes (presupuesto > 50k COP, destino ≠
+  origen, fecha futura) y pregunta lo que falta con preguntas específicas
+  ("¿Desde qué ciudad sales?"). No llama a Google Flights con slots incompletos.
+- **Estado:** `UserState` v2 (slots confirmados + resumen de historial de 5
+  turnos solo para tono) en Upstash Redis con TTL de 30 días; sin credenciales,
+  memoria local.
 - **Vuelos:** usa `fast-flights` (Google Flights, gratis). Si la red falla o el
-  destino no tiene código IATA (islas del Pacífico, pueblos sin aeropuerto),
-  cae a un simulador interno de precios realistas.
-- **Persistencia:** perfil por chat (presupuesto, pasajeros, historial, viajes
-  guardados) en Upstash Redis vía REST; si no hay credenciales, memoria local.
+  destino no tiene código IATA, cae a un simulador interno de precios realistas.
 
 ## Requisitos
 
@@ -119,27 +125,41 @@ muestra link.
 
 ```
 app/
-  main.py            # FastAPI: webhooks de Telegram y WhatsApp + /diagnostico
-  config.py          # Carga de variables de entorno
-  orchestrator.py    # máquina de estados de la conversación (despacho por intención)
-  intents.py         # intérprete: prompt LLM + heurística de respaldo
-  flight_client.py   # precios Google Flights (fast-flights) + simulador
-  destinos.py        # catálogo de destinos de Colombia (alias, IATA, sin-IATA)
-  formatter.py       # renderiza opciones y precio legible
-  fotos.py           # foto del destino desde Wikipedia (Wikimedia)
-  links.py           # link directo a Google Flights para comprar
-  models.py          # MensajeEntrada/Salida, Perfil (contexto por usuario)
-  profile_store.py   # Upstash Redis REST o memoria local
-  llm_router.py      # cascada Gemini → Groq → DeepSeek → fallback
-  llm_providers/     # implementaciones de cada proveedor LLM
-    base.py          # interfaz ProveedorLLM + helper OpenAI-compatible
-    gemini.py        # Google Gemini (free tier)
-    groq.py          # Groq (free tier)
-    deepseek.py      # DeepSeek (económico)
+  main.py               # FastAPI: webhooks de Telegram y WhatsApp + /diagnostico
+  config.py             # Carga de variables de entorno
+  dialogue_manager.py   # flujo por turno: reset temprano -> NLU -> SlotManager -> Executor
+  dialogue/
+    slot_manager.py     # invariantes (presupuesto>50k, fecha futura) y next_action
+    executor.py         # búsqueda validada + chitchat (LLM solo para tono)
+  nlu/
+    schemas.py          # contratos Pydantic RawSlots / NormalizedSlots
+    extractor.py        # Gemini JSON mode (1 proveedor) + fallback determinista
+    composicion.py      # RawSlots + estado -> NormalizedSlots (puro)
+    api.py              # fachada interpretar(texto) -> NormalizedSlots
+  normalizers/
+    money.py            # "un palo", "600 mil", "500k", "300 dólares" -> COP
+    city.py             # alias exacto por tokens + difflib último recurso
+    date.py             # "principios de enero 2027" -> ISO; rango de meses
+    passengers.py       # "somos mi esposa y yo" -> 2
+    text.py             # utilidades (tildes, tokenización con offsets)
+  flight_client.py      # precios Google Flights (fast-flights) + simulador
+  destinos.py           # catálogo de destinos de Colombia (alias, IATA, sin-IATA)
+  formatter.py          # renderiza opciones y precio legible
+  fotos.py              # foto del destino desde Wikipedia (Wikimedia)
+  links.py              # link directo a Google Flights para comprar
+  models.py             # MensajeEntrada/Salida, UserState v2, Sender
+  profile_store.py      # Upstash Redis REST (TTL + DELETE) o memoria local
+  llm_router.py         # chitchat: Gemini -> Groq (gpt-oss) -> DeepSeek -> plantillas
+  llm_providers/        # implementaciones de cada proveedor LLM
+    base.py             # interfaz ProveedorLLM + helper OpenAI-compatible
+    gemini.py           # Google Gemini (free tier)
+    groq.py             # Groq openai/gpt-oss-20b|120b (free tier Developer)
+    deepseek.py         # DeepSeek (económico)
   adapters/
-    base.py          # Protocol CanalAdapter
-    telegram.py      # canal Telegram (texto + foto + teclado)
-    whatsapp.py      # canal WhatsApp Cloud API (texto + foto + verificación)
+    base.py             # Protocol CanalAdapter (parse_todos multi-message)
+    telegram.py         # canal Telegram (texto + foto + teclado)
+    whatsapp.py         # canal WhatsApp Cloud API (texto + foto + verificación)
+tests/                  # pytest: golden dataset, normalizers, extractor, diálogo, adapters
 ```
 
 ## Roadmap

@@ -10,16 +10,19 @@ class TelegramAdapter:
     canal: str = "telegram"
 
     def parse(self, update: dict) -> MensajeEntrada | None:
-        message = update.get("message") or {}
+        mensajes = self.parse_todos(update)
+        return mensajes[0] if mensajes else None
+
+    def parse_todos(self, update: dict) -> list[MensajeEntrada]:
+        """Extrae todos los mensajes de un update (texto o editado)."""
+        message = update.get("message") or update.get("edited_message") or {}
         chat_id = str(message.get("chat", {}).get("id", ""))
         texto = (message.get("text") or "").strip()
         if not chat_id:
-            return None
-        return MensajeEntrada(
-            chat_id=chat_id,
-            texto=texto,
-            canal=self.canal,
-        )
+            return []
+        return [
+            MensajeEntrada(chat_id=chat_id, texto=texto, canal=self.canal)
+        ]
 
     async def enviar(self, chat_id: str, salida: MensajeSalida) -> None:
         async with httpx.AsyncClient(timeout=15) as client:

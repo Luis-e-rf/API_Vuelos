@@ -9,7 +9,6 @@ from app import config
 from app.adapters.telegram import TelegramAdapter
 from app.adapters.whatsapp import WhatsAppAdapter
 from app.dialogue_manager import DialogueManager
-from app.orchestrator import Orquestador
 from app.profile_store import ProfileStore
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s", force=True)
@@ -18,8 +17,9 @@ log = logging.getLogger("webhook")
 app = FastAPI(title="API Vuelos - Bot multiplataforma")
 
 _store = ProfileStore()
-# Feature flag NEW_NLU: DialogueManager (v2) u Orquestador legacy (rollback).
-_orquestador = DialogueManager(_store) if config.NEW_NLU else Orquestador(_store)
+# Pipeline NLU v2 (Extractor Gemini JSON + normalizers + SlotManager).
+# Rollback a la arquitectura legacy: git revert de 2a9216d..c85abad.
+_bot = DialogueManager(_store)
 
 _telegram = TelegramAdapter()
 _whatsapp = WhatsAppAdapter()
@@ -65,7 +65,7 @@ async def webhook_telegram(request: Request):
     update = await request.json()
     entrada = _telegram.parse(update)
     if entrada:
-        await _orquestador.procesar(entrada, _telegram)
+        await _bot.procesar(entrada, _telegram)
     return {"ok": True}
 
 
@@ -106,8 +106,8 @@ async def webhook_whatsapp(request: Request):
 
     log.info("WA webhook POST recibido: %s", raw[:500])
     update = await request.json()
-    entrada = _whatsapp.parse(update)
-    log.info("WA parse -> %s", entrada)
-    if entrada:
-        await _orquestador.procesar(entrada, _whatsapp)
+    entradas = _whatsapp.parse_todos(update)
+    log.info("WA parse -> %s mensaje(s)", len(entradas))
+    for entrada in entradas:
+        await _bot.procesar(entrada, _whatsapp)
     return {"ok": True, "whatsapp": True}

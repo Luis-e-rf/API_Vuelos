@@ -8,6 +8,7 @@ dependencies = [
     "uvicorn[standard]>=0.34.0",
     "httpx>=0.28.1",
     "fast-flights>=3.0.2",
+    "pydantic>=2.6",
 ]
 
 [dependency-groups]

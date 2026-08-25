@@ -249,6 +249,28 @@ Si usuario dice `somos 3` en turno siguiente:
 
 Estimado total: 8-10 días con tests, vs seguir parcheando regex que ya lleva 6 commits (`bd3ef4c`, `ec4647e`, `768436b`...) sin cerrar el bug.
 
+### 4.1 Registro de ejecución real (2026-08-24, refactor completado)
+
+Estado: **FASES 0-5 ejecutadas y verificadas**. Suite: `pytest` 106 tests en verde. Cobertura `app/normalizers/`: 98%.
+
+| Fase | Commit | Entregado |
+|---|---|---|
+| 0 | `db22a4f` | Golden dataset de 20 frases coloquiales (`tests/test_nlu_golden.py`) + contratos Pydantic `RawSlots`/`NormalizedSlots` (`app/nlu/schemas.py`). Línea base contra el legacy: 11/20 fallaban. |
+| 1 | `2a9216d` | `app/normalizers/{money,city,date,passengers,text}.py`: funciones puras. MoneyParser (k/mil/lucas/millón/palo/melón, separador de miles, USD/EUR→COP, marca "por persona"), CityNormalizer (ventanas de tokens + alias exacto, difflib 0.88 solo último recurso, sin substring), DateParser (períodos 05/15/25, año suelto→01-15, rolloff futuro), pasajeros (familiar+"y yo", cantidad+sustantivo, pareja). |
+| 2 | `4fa1dd4` | `app/nlu/extractor.py`: Gemini `gemini-flash-lite-latest` con `response_mime_type=application/json`, prompt <250 tokens, 2 few-shots, reintento único, sin cascada. Fallback determinista offline. `composicion.py`: fusión de slots + multiplicación "por persona" por pasajeros del turno. Golden 20/20 sin LLM. |
+| 3 | `c85abad` | `app/dialogue_manager.py` + `app/dialogue/{slot_manager,executor}.py`: early-reset determinista con `store.borrar()`, invariantes (presupuesto>50k, destino≠origen, fecha futura), `ASK_SLOT` con pregunta específica, `UserState` v2 (Pydantic) con `history_summary` máx 5 solo para NLG. `ProfileStore` v2: clave `estado:*` con TTL 30d, DELETE real, JSON en cuerpo del POST (fix del bug de encoding). |
+| 4 | `b4dae58` | Groq migrado a `openai/gpt-oss-20b`→`gpt-oss-120b` (llama-3.3-70b-versatile pasó a Enterprise: 404 en free). Fix doble conteo: Google Flights ya cotiza por el grupo, el multiplicador queda solo para el simulador. Guardas en ActionExecutor: sin presupuesto u origen sin IATA no se llama a la API. |
+| 5 | (este) | Legacy eliminado (`intents.py`, `orchestrator.py`, flag `NEW_NLU`): criterio `grep -r "_heuristica\|_quiere_comprar\|_huele_busqueda" app/` = 0. Rollback = `git revert 2a9216d..c85abad`. WhatsApp `parse_todos` procesa múltiples messages por POST; Telegram soporta `edited_message`. `pydantic` explícito en pyproject. README y este documento actualizados. |
+
+Decisiones de diseño tomadas durante la ejecución (desviaciones documentadas):
+
+1. `NormalizedSlots.intent_hint` y `RawSlots.numero_opcion` se añadieron al contrato para que el dataset dorado observe reset/chitchat/"la 2" de forma stateless; `numero_opcion` se llena SIEMPRE por vía determinista.
+2. `"somos mi esposa y yo"` = 2 personas (el prompt original decía 3; confirmado con el autor: 2 es lo correcto).
+3. El fallback determinista llena los `*_raw` con el texto completo (los normalizers son idempotentes); el LLM sí extrae spans precisos.
+4. El flag `NEW_NLU` vivió en fases 3-4 y se retiró en la 5: mantener el Orquestador legacy como "rollback" era una trampa (crash conocido: `_dispatch` retornaba tuplas). Rollback real: `git revert`.
+5. `Perfil` v1 y sus métodos de store permanecen como esquema deprecado para no romper datos viejos en Redis; la clave nueva `estado:*` convive sin colisión.
+6. Pendiente fuera de alcance: compra real dentro del chat (hoy link a Google Flights), plantillas WhatsApp fuera de ventana 24h, tasas de cambio vía API (siguen fijas 4000/4400), TTL para claves v1 huérfanas.
+
 ---
 
 ## 5. ¿Es un proyecto muy complejo sin arquitectura principal? ¿Hay que guiarlo más?

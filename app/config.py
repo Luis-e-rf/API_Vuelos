@@ -43,7 +43,3 @@ DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 # Vuelos reales por Google Flights (fast-flights). "1" con la dependencia instalada
 # activa los datos en vivo; si falla la red, cae al simulador interno. Vacío = simulador.
 FAST_FLIGHTS_ENABLED = os.environ.get("FAST_FLIGHTS_ENABLED", "1") == "1"
-
-# NLU v2 (DialogueManager + SlotManager). "1" = nuevo pipeline; "0" = rollback al
-# Orquestador legacy (Perfil v1). El rollback conserva el mismo contrato procesar().
-NEW_NLU = os.environ.get("NEW_NLU", "1") == "1"

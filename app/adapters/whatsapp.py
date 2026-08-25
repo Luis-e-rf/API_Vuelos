@@ -60,33 +60,42 @@ class WhatsAppAdapter:
         return hmac.compare_digest(expected, signature)
 
     def parse(self, update: dict) -> MensajeEntrada | None:
+        mensajes = self.parse_todos(update)
+        return mensajes[0] if mensajes else None
+
+    def parse_todos(self, update: dict) -> list[MensajeEntrada]:
+        """Extrae TODOS los mensajes de usuario de un webhook de Meta.
+
+        Un POST puede traer varios messages (mensajes rápidos seguidos);
+        procesarlos todos evita perder el segundo cuando llegan juntos.
+        Ignora statuses (entregado/leído) y mensajes sin remitente.
+        """
         try:
             value = update["entry"][0]["changes"][0]["value"]
-            msg = value.get("messages") or [{}]
-            msg = msg[0]
-            wa_id = msg.get("from")
-            if not wa_id:
-                return None
-            tipo = msg.get("type")
-            if tipo == "status":
-                return None
-            texto = ""
-            ubicacion = None
-            if tipo == "text":
-                texto = msg.get("text", {}).get("body", "")
-            elif tipo == "image":
-                texto = msg.get("image", {}).get("caption", "")
-            elif tipo == "location":
-                loc = msg.get("location", {})
-                ubicacion = (loc.get("latitude"), loc.get("longitude"))
-            return MensajeEntrada(
-                chat_id=wa_id,
-                texto=texto,
-                canal=self.canal,
-                ubicacion=ubicacion,
-            )
+            salida: list[MensajeEntrada] = []
+            for msg in value.get("messages") or []:
+                wa_id = msg.get("from")
+                if not wa_id:
+                    continue
+                tipo = msg.get("type")
+                texto = ""
+                ubicacion = None
+                if tipo == "text":
+                    texto = msg.get("text", {}).get("body", "")
+                elif tipo == "image":
+                    texto = msg.get("image", {}).get("caption", "")
+                elif tipo == "location":
+                    loc = msg.get("location", {})
+                    ubicacion = (loc.get("latitude"), loc.get("longitude"))
+                else:
+                    continue  # status / tipo no soportado
+                salida.append(MensajeEntrada(
+                    chat_id=wa_id, texto=texto, canal=self.canal,
+                    ubicacion=ubicacion,
+                ))
+            return salida
         except (KeyError, IndexError, TypeError):
-            return None
+            return []
 
     async def enviar(self, chat_id: str, salida: MensajeSalida) -> None:
         if not WA_TOKEN or not WA_PHONE_NUMBER_ID:
