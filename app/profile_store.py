@@ -8,17 +8,25 @@ from typing import Optional
 import httpx
 
 from app.config import UPSTASH_REDIS_REST_TOKEN, UPSTASH_REDIS_REST_URL
-from app.models import Perfil
+from app.models import Perfil, UserState
 
 log = logging.getLogger(__name__)
 
+_TTL_ESTADO_SEG = 60 * 60 * 24 * 30  # estado v2 expira en 30 días
+
 
 class ProfileStore:
-    """Guarda/lee el perfil de un usuario. Clave = chat_id (canal-prefijado).
+    """Guarda/lee el perfil de un usuario. Clave = chat_id (canal-prefijada).
 
     Usa Upstash Redis vía su REST API (free tier). Si no hay credenciales
     configuradas, cae a un dict en memoria para que el desarrollo local y
     las pruebas funcionen sin servicios externos.
+
+    Dos generaciones de esquema:
+    - v1 `perfil:*`   -> dataclass Perfil (legacy, rollback del flag).
+    - v2 `estado:*`   -> UserState (Pydantic) con TTL y borrado real.
+    El valor de v2 viaja en el CUERPO del POST (no en la URL), lo que
+    elimina el bug de JSON sin URL-encodear de v1.
     """
 
     def __init__(
@@ -28,11 +36,15 @@ class ProfileStore:
     ) -> None:
         self.url = url
         self.token = token
-        self._cache: dict[str, Perfil] = {}
+        self._cache: dict[str, Perfil | UserState] = {}
         self._redis = bool(url and token)
 
     def _key(self, chat_id: str, canal: str) -> str:
         return f"perfil:{canal}:{chat_id}"
+
+    @staticmethod
+    def _key_estado(chat_id: str, canal: str) -> str:
+        return f"estado:{canal}:{chat_id}"
 
     async def leer(self, chat_id: str, canal: str = "unknown") -> Perfil:
         key = self._key(chat_id, canal)
@@ -76,3 +88,62 @@ class ProfileStore:
         for k, v in nuevos.items():
             setattr(perfil, k, v)
         await self.guardar(perfil, canal)
+
+    # --- esquema v2 (UserState) ------------------------------------------
+
+    async def leer_estado(self, chat_id: str, canal: str = "unknown") -> UserState:
+        key = self._key_estado(chat_id, canal)
+        if not self._redis:
+            return self._cache.get(key) or UserState()
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                r = await client.get(
+                    f"{self.url}/get/{key}",
+                    headers={"Authorization": f"Bearer {self.token}"},
+                )
+                data = r.json()
+            if data.get("result"):
+                return UserState.from_dict(json.loads(data["result"]))
+        except Exception as exc:  # noqa: BLE001 - no romper el flujo del bot
+            log.warning("Redis leer_estado falló para %s: %s", key, exc)
+        return UserState()
+
+    async def guardar_estado(self, estado: UserState, chat_id: str, canal: str = "unknown") -> None:
+        """Persiste el UserState v2 con TTL de 30 días.
+
+        El JSON va en el cuerpo del POST (/set/{key}/ex/{ttl}), no en la
+        URL: valores con tildes, espacios o '/' no corrompen la clave.
+        """
+        key = self._key_estado(chat_id, canal)
+        if not self._redis:
+            self._cache[key] = estado
+            return
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                await client.post(
+                    f"{self.url}/set/{key}/ex/{_TTL_ESTADO_SEG}",
+                    content=json.dumps(estado.to_dict()),
+                    headers={
+                        "Authorization": f"Bearer {self.token}",
+                        "Content-Type": "text/plain",
+                    },
+                )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Redis guardar_estado falló para %s: %s", key, exc)
+
+    async def borrar(self, chat_id: str, canal: str = "unknown") -> bool:
+        """Elimina la clave del estado (reset real, no mutación parcial)."""
+        key = self._key_estado(chat_id, canal)
+        self._cache.pop(key, None)
+        if not self._redis:
+            return True
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                r = await client.get(
+                    f"{self.url}/delete/{key}",
+                    headers={"Authorization": f"Bearer {self.token}"},
+                )
+            return bool(r.json().get("result"))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Redis borrar falló para %s: %s", key, exc)
+            return False

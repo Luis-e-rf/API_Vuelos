@@ -1,7 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from typing import Optional
+from typing import ClassVar, Optional, Protocol
+
+from pydantic import BaseModel, Field
+
+from app.nlu.schemas import NormalizedSlots
+
+
+class Sender(Protocol):
+    """Contrato de salida: cualquier canal que sepa enviar MensajeSalida."""
+
+    async def enviar(self, chat_id: str, salida: MensajeSalida) -> None: ...
 
 
 @dataclass
@@ -60,3 +70,43 @@ class Perfil:
         known = {f for f in cls.__dataclass_fields__}
         clean = {k: v for k, v in data.items() if k in known}
         return cls(**clean)
+
+
+class UserState(BaseModel):
+    """Estado de diálogo por chat (v2). Reemplaza al Dios-objeto Perfil.
+
+    - slots: preferencias confirmadas (NormalizedSlots), persisten.
+    - history_summary: contexto SOLO para NLG (máx 5 entradas); nunca se
+      reinyecta al NLU. Expira con el TTL del store.
+    - pending_question: slot que se le preguntó al usuario (UX, no candado).
+    - opciones_recientes: últimas opciones mostradas ("la 2", "lo quiero").
+
+    Migración: los dict v1 (Perfil) sin version=2 se descartan y arrancan
+    frescos; la clave de Redis es nueva (`estado:*`) para no chocar.
+    """
+
+    version: int = 2
+    slots: NormalizedSlots = Field(default_factory=NormalizedSlots)
+    history_summary: list[dict] = Field(default_factory=list)
+    pending_question: Optional[str] = None
+    opciones_recientes: list[dict] = Field(default_factory=list)
+
+    MAX_HISTORIAL: ClassVar[int] = 5
+
+    def to_dict(self) -> dict:
+        return self.model_dump()
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "UserState":
+        try:
+            if int(data.get("version", 0)) != 2:
+                return cls()
+            return cls.model_validate(data)
+        except (TypeError, ValueError):
+            return cls()
+
+    def agregar_historial(self, rol: str, contenido: str) -> None:
+        """Añade un turno al resumen y recorta a MAX_HISTORIAL."""
+        self.history_summary.append({"role": rol, "content": contenido[:300]})
+        if len(self.history_summary) > self.MAX_HISTORIAL:
+            self.history_summary = self.history_summary[-self.MAX_HISTORIAL:]

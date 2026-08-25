@@ -61,7 +61,8 @@ _ORDINALES = {
     "primera": 1, "primero": 1, "segunda": 2, "segundo": 2,
     "tercera": 3, "tercero": 3, "cuarta": 4, "cuarto": 4, "quinta": 5,
 }
-_OPCION_RX = re.compile(r"\b(?:la|el|opcion)\s*(\d)\b")
+# sin "el": 'el 5 de enero' colisiona con selección de opción
+_OPCION_RX = re.compile(r"\b(?:la|opcion)\s*(\d)\b")
 
 
 def _numero_opcion(texto: str) -> int | None:
@@ -95,10 +96,13 @@ def _roles_ciudades(texto: str) -> tuple[str | None, str | None]:
     return origen, destino
 
 
-def _hint_determinista(t: str, hay_datos: bool) -> IntentHint:
+def _hint_determinista(t: str, hay_datos: bool, hay_senales_fuertes: bool,
+                       numero: int | None) -> IntentHint:
+    """Prioridad: reset > select_option (sin señales fuertes) > change >
+    chitchat (cero datos) > search."""
     if any(v in t for v in VOCAB_RESET):
         return "reset"
-    if _numero_opcion(t):
+    if numero and not hay_senales_fuertes:
         return "select_option"
     if any(v in t for v in _VOCAB_CAMBIO):
         return "change"
@@ -155,8 +159,11 @@ class Extractor:
         rango = date.rango_meses(texto)
         numero = _numero_opcion(texto)
 
-        hay_datos = bool(origen or destino or monto.valor_cop or monto.por_persona
-                         or pax or fecha or rango or numero)
+        # señales fuertes: si hay ciudad/dinero/fecha/rango, un número suelto
+        # ('el 5 de enero') no es selección de opción
+        fuertes = bool(origen or destino or monto.valor_cop or monto.por_persona
+                       or fecha or rango)
+        hay_datos = fuertes or pax or numero
         return RawSlots(
             origen_raw=origen,          # ya canónico; CityNormalizer es idempotente
             destino_raw=destino,
@@ -164,7 +171,7 @@ class Extractor:
             pasajeros_raw=texto if pax else None,
             fecha_raw=texto if fecha else None,
             rango_meses_raw=texto if rango else None,
-            intent_hint=_hint_determinista(t_norm, hay_datos),
+            intent_hint=_hint_determinista(t_norm, hay_datos, fuertes, numero),
             numero_opcion=numero,
         )
 

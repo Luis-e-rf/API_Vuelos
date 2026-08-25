@@ -8,6 +8,7 @@ from collections import defaultdict
 from app import config
 from app.adapters.telegram import TelegramAdapter
 from app.adapters.whatsapp import WhatsAppAdapter
+from app.dialogue_manager import DialogueManager
 from app.orchestrator import Orquestador
 from app.profile_store import ProfileStore
 
@@ -17,7 +18,8 @@ log = logging.getLogger("webhook")
 app = FastAPI(title="API Vuelos - Bot multiplataforma")
 
 _store = ProfileStore()
-_orquestador = Orquestador(_store)
+# Feature flag NEW_NLU: DialogueManager (v2) u Orquestador legacy (rollback).
+_orquestador = DialogueManager(_store) if config.NEW_NLU else Orquestador(_store)
 
 _telegram = TelegramAdapter()
 _whatsapp = WhatsAppAdapter()
