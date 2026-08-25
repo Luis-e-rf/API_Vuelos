@@ -10,6 +10,7 @@ import logging
 from typing import Optional
 
 from app import llm_router
+from app.destinos import DESTINOS
 from app.dialogue.slot_manager import PREGUNTAS
 from app.flight_client import FlightClient, OpcionVuelo
 from app.fotos import foto_destino
@@ -46,9 +47,20 @@ class ActionExecutor:
         self.flight = flight or FlightClient()
 
     async def buscar(self, slots, estado: UserState) -> MensajeSalida:
-        """SEARCH / SEARCH_RANGO con slots ya validados por SlotManager."""
+        """SEARCH / SEARCH_RANGO con slots ya validados por SlotManager.
+
+        Guardas defensivas ANTES de llamar a Google Flights (análisis §2.6):
+        sin presupuesto o con origen sin IATA no se consulta la API.
+        """
+        if not slots.presupuesto_cop:
+            return MensajeSalida(PREGUNTAS["presupuesto"])
         origen = slots.origen or "Bogota"
-        cop = slots.presupuesto_cop or 0
+        if not DESTINOS.get(origen):
+            return MensajeSalida(
+                f"No conozco aeropuerto para salir desde *{origen}* 🛫. "
+                "¿Desde qué otra ciudad sales? (ej: Bogotá, Medellín, Cali)"
+            )
+        cop = slots.presupuesto_cop
         if slots.rango_meses:
             opciones = await self.flight.buscar_rango(
                 origen, cop, slots.rango_meses, destino=slots.destino,

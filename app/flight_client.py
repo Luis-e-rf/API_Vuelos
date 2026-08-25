@@ -137,12 +137,14 @@ class FlightClient:
         aerolinea: Optional[str] = None,
     ) -> list[OpcionVuelo]:
         if self.real:
+            # Google ya cotiza por TODOS los pasajeros (Passengers.adults):
+            # NO re-multiplicar (bug histórico de doble conteo).
             reales = await self._buscar_google(
                 origen, fecha or fecha_default(), numero, destino=destino,
                 aerolinea=aerolinea, pasajeros=pasajeros,
             )
             if reales:
-                return [_por_pasajeros(o, pasajeros) for o in reales]
+                return reales
             log.warning("Google Flights sin respuesta -> crea motor simulado")
         opciones = self._simular(origen, presupuesto_cop, fecha, numero, destino, aerolinea=aerolinea)
         return [_por_pasajeros(o, pasajeros) for o in opciones]
@@ -181,7 +183,11 @@ class FlightClient:
             matching = [o for o in mejores if _coincide_aerolinea(o.aerolinea, aerolinea)]
             if matching:
                 mejores = matching
-        return [_por_pasajeros(o, pasajeros) for o in mejores[:numero]]
+        resultado = mejores[:numero]
+        if not self.real:
+            # solo el simulador da precios por persona: ahí sí se multiplica
+            resultado = [_por_pasajeros(o, pasajeros) for o in resultado]
+        return resultado
 
     # --- Google Flights (vivo) ----------------------------------------------
 
