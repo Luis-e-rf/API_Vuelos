@@ -1,3 +1,11 @@
 .venv
-requirements.txt
+.git
+.env
+.coverage
 __pycache__
+**/__pycache__
+tests
+docs
+render.yaml
+README.md
+.dockerignore

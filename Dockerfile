@@ -10,25 +10,22 @@ ENV UV_COMPILE_BYTECODE=1 \
 COPY pyproject.toml uv.lock ./
 RUN uv sync --no-dev --frozen --no-install-project
 
+# Runtime chainguard: distroless, SIN shell. Nada de RUN/CMD con /bin/sh:
+# entrypoint exec directo al python del venv (resuelve sus site-packages solo).
 FROM cgr.dev/chainguard/python:latest
 
 WORKDIR /app
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PATH=/app/.venv/bin:$PATH
 
 COPY --from=builder /app/.venv /app/.venv
-COPY . .
-
-# Detectar versión de Python y crear script de inicio
-RUN PYVER=$(python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')") && \
-    echo "#!/bin/sh" > /app/start.sh && \
-    echo "export PYTHONPATH=/app/.venv/lib/python${PYVER}/site-packages" >> /app/start.sh && \
-    echo "exec python run.py" >> /app/start.sh && \
-    chmod +x /app/start.sh
-
-EXPOSE 8080
+COPY app ./app
+COPY run.py .
 
 USER nonroot
 
-CMD ["/bin/sh", "/app/start.sh"]
+EXPOSE 8080
+
+ENTRYPOINT ["/app/.venv/bin/python", "run.py"]
